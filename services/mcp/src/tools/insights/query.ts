@@ -9,6 +9,7 @@ import { withPostHogUrl, type WithPostHogUrl } from '@/tools/tool-utils'
 import { type Context, POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY, type ToolBase } from '@/tools/types'
 
 import { analyzeQuery } from '../shared'
+import { formatRetentionResults } from './retention-format'
 
 const schema = InsightQueryInputSchema
 
@@ -104,6 +105,11 @@ export const queryHandler: ToolBase<typeof schema, Result>['handler'] = async (c
     // under the override key (which build-tool-result strips from structuredContent and uses as
     // the text payload) rather than overwriting `results` with it — mirrors query-wrapper-factory.
     const surfaceFormatted = output_format === 'optimized' && queryResult.data.formatted_results != null
+    // The backend formats trends and funnels but not retention; build retention's table here.
+    const retentionText =
+        output_format === 'optimized' && !surfaceFormatted && queryInfo.innerKind === 'RetentionQuery'
+            ? formatRetentionResults(results, queryInfo.innerQuery)
+            : undefined
 
     return withPostHogUrl(
         context,
@@ -117,7 +123,9 @@ export const queryHandler: ToolBase<typeof schema, Result>['handler'] = async (c
             ...(queryResult.data.warnings ? { warnings: queryResult.data.warnings } : {}),
             ...(surfaceFormatted
                 ? { [POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY]: queryResult.data.formatted_results }
-                : {}),
+                : retentionText
+                  ? { [POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY]: retentionText }
+                  : {}),
         },
         path
     )

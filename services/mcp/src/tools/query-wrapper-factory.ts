@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 import { type TraceDetail, compactTraceResponse } from '@/lib/trace-compaction'
 import { redactTraceResults } from '@/lib/trace-redaction'
+import { formatRetentionResults } from '@/tools/insights/retention-format'
 import {
     POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY,
     POSTHOG_META_KEY,
@@ -288,9 +289,15 @@ export function createQueryWrapper<T extends ZodObjectAny>(config: QueryWrapperC
             if (isTraceQuery) {
                 return compactTraceResponse(response, traceDetail, effectiveOutputFormat)
             }
+            // The backend formats trends and funnels but not retention, so build retention's table here.
+            const formattedResults = shouldSurfaceFormatted
+                ? data.formatted_results
+                : config.kind === 'RetentionQuery' && effectiveOutputFormat === 'optimized'
+                  ? formatRetentionResults(data.results, query)
+                  : undefined
             return {
                 ...response,
-                ...(shouldSurfaceFormatted ? { [POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY]: data.formatted_results } : {}),
+                ...(formattedResults ? { [POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY]: formattedResults } : {}),
             }
         },
         _meta: {

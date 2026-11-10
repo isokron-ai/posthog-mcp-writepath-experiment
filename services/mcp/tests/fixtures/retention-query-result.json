@@ -1,0 +1,1390 @@
+{
+  "query": {
+    "dateRange": {
+      "date_from": "-28d"
+    },
+    "kind": "RetentionQuery",
+    "properties": [],
+    "retentionFilter": {
+      "aggregationPropertyType": "event",
+      "aggregationType": "count",
+      "period": "Day",
+      "returningEntity": {
+        "id": "friction-pageview",
+        "name": "friction-pageview",
+        "type": "events"
+      },
+      "targetEntity": {
+        "id": "friction-signup_completed",
+        "name": "friction-signup_completed",
+        "type": "events"
+      },
+      "totalIntervals": 8
+    }
+  },
+  "results": [
+    {
+      "breakdown_value": null,
+      "date": "2026-10-13T00:00:00Z",
+      "label": "Day 0",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 32,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-14T00:00:00Z",
+      "label": "Day 1",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 33,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-15T00:00:00Z",
+      "label": "Day 2",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 39,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-16T00:00:00Z",
+      "label": "Day 3",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 26,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-17T00:00:00Z",
+      "label": "Day 4",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 22,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-18T00:00:00Z",
+      "label": "Day 5",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 18,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-19T00:00:00Z",
+      "label": "Day 6",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 27,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-20T00:00:00Z",
+      "label": "Day 7",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 33,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 10,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-21T00:00:00Z",
+      "label": "Day 8",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 35,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 11,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-22T00:00:00Z",
+      "label": "Day 9",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 33,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 11,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-23T00:00:00Z",
+      "label": "Day 10",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 42,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 13,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-24T00:00:00Z",
+      "label": "Day 11",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 22,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-25T00:00:00Z",
+      "label": "Day 12",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 14,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-26T00:00:00Z",
+      "label": "Day 13",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 28,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-27T00:00:00Z",
+      "label": "Day 14",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 36,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-28T00:00:00Z",
+      "label": "Day 15",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 33,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 11,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-29T00:00:00Z",
+      "label": "Day 16",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 33,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 12,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 10,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-30T00:00:00Z",
+      "label": "Day 17",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 39,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-10-31T00:00:00Z",
+      "label": "Day 18",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 23,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 1,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-01T00:00:00Z",
+      "label": "Day 19",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 18,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-02T00:00:00Z",
+      "label": "Day 20",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 31,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 10,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 9,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-03T00:00:00Z",
+      "label": "Day 21",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 26,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-04T00:00:00Z",
+      "label": "Day 22",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 27,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 7,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 2,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-05T00:00:00Z",
+      "label": "Day 23",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 29,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 8,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-06T00:00:00Z",
+      "label": "Day 24",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 38,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 15,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 5,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 12,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-07T00:00:00Z",
+      "label": "Day 25",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 21,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 6,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 4,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-08T00:00:00Z",
+      "label": "Day 26",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 19,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 3,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-09T00:00:00Z",
+      "label": "Day 27",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 36,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    },
+    {
+      "breakdown_value": null,
+      "date": "2026-11-10T00:00:00Z",
+      "label": "Day 28",
+      "values": [
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 0"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 1"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 2"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 3"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 4"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 5"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 6"
+        },
+        {
+          "aggregation_value": null,
+          "count": 0,
+          "label": "Day 7"
+        }
+      ]
+    }
+  ]
+}
