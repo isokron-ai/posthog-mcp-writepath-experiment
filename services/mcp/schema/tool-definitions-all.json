@@ -4168,6 +4168,32 @@
             "readOnlyHint": false
         }
     },
+    "dashboard-create-with-insights": {
+        "description": "Create a dashboard and all of its insight tiles in one call. `tiles` is the display order; each tile is a new insight ({name, description?, query}, where query is exactly what insight-create takes) or an existing one ({insight_id}). Before writing anything, every new tile's query is checked against insight-create's schema and, with `validate: \"run\"` (the default), run once through the query API; every existing insight is read. If any tile fails, nothing is created and the error lists each failing tile. Then the dashboard and tiles are created in order and, with `layout`, arranged. If a later step fails, everything this call wrote is undone (compensating rollback: created insights and the dashboard are soft-deleted, attached insights are detached again) and the error says what failed, what was rolled back and anything left behind. The REST API has no transaction, so other readers can briefly see the partial dashboard. Returns a trimmed receipt: dashboard id, name and url, and per tile its insight id, short_id and tile id. `dry_run: true` validates and returns the plan without writing. Use this instead of dashboard-create plus one insight-create per tile.",
+        "category": "Dashboards",
+        "feature": "dashboards",
+        "summary": "Create a dashboard with its insight tiles in one validated call, rolled back on failure.",
+        "title": "Create dashboard with insights",
+        "required_scopes": ["dashboard:write", "insight:write", "query:read"],
+        "api_operations": [
+            "POST /api/projects/{project_id}/dashboards/",
+            "PATCH /api/projects/{project_id}/dashboards/{id}/",
+            "GET /api/projects/{project_id}/dashboards/{id}/",
+            "POST /api/projects/{project_id}/dashboards/{id}/reorder_tiles/",
+            "POST /api/projects/{project_id}/insights/",
+            "GET /api/projects/{project_id}/insights/",
+            "GET /api/projects/{project_id}/insights/{id}/",
+            "PATCH /api/projects/{project_id}/insights/{id}/",
+            "POST /api/projects/{project_id}/query/"
+        ],
+        "search_keywords": ["dashboard", "tiles", "build dashboard", "atomic"],
+        "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": false,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
+    },
     "dashboard-delete": {
         "description": "Delete a dashboard by ID. The dashboard will be soft-deleted and no longer appear in lists.",
         "category": "Dashboards",

@@ -1,0 +1,101 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "description": {
+            "description": "Dashboard description.",
+            "type": "string"
+        },
+        "dry_run": {
+            "description": "Validate every tile and report the plan, without creating anything.",
+            "type": "boolean"
+        },
+        "layout": {
+            "description": "Arrange the tiles in the given order. 'two_column' is 6 wide, 'three_column' 4 wide, 'full_width' 12 wide; 'preserve' keeps default sizes. Omit to keep the order the tiles were added in.",
+            "enum": ["preserve", "two_column", "three_column", "full_width"],
+            "type": "string"
+        },
+        "name": {
+            "description": "Dashboard name.",
+            "maxLength": 400,
+            "minLength": 1,
+            "type": "string"
+        },
+        "pinned": {
+            "description": "Pin the dashboard in the sidebar.",
+            "type": "boolean"
+        },
+        "tags": {
+            "description": "Dashboard tags.",
+            "items": {
+                "type": "string"
+            },
+            "type": "array"
+        },
+        "tiles": {
+            "description": "The tiles in display order, at most 20. Each is a new insight or an existing one.",
+            "items": {
+                "anyOf": [
+                    {
+                        "additionalProperties": false,
+                        "description": "A new insight to create on the dashboard.",
+                        "properties": {
+                            "description": {
+                                "description": "Optional, about 15 words.",
+                                "maxLength": 400,
+                                "type": "string"
+                            },
+                            "name": {
+                                "description": "Insight name.",
+                                "maxLength": 400,
+                                "minLength": 1,
+                                "type": "string"
+                            },
+                            "query": {
+                                "additionalProperties": {},
+                                "description": "The insight query, exactly as insight-create takes it, e.g. {\"kind\":\"InsightVizNode\",\"source\":{\"kind\":\"TrendsQuery\",...}} or {\"kind\":\"DataVisualizationNode\",\"source\":{\"kind\":\"HogQLQuery\",\"query\":\"...\"}}.",
+                                "propertyNames": {
+                                    "type": "string"
+                                },
+                                "type": "object"
+                            }
+                        },
+                        "required": ["name", "query"],
+                        "type": "object"
+                    },
+                    {
+                        "additionalProperties": false,
+                        "description": "An existing insight to add to the dashboard.",
+                        "properties": {
+                            "insight_id": {
+                                "anyOf": [
+                                    {
+                                        "maximum": 9007199254740991,
+                                        "minimum": -9007199254740991,
+                                        "type": "integer"
+                                    },
+                                    {
+                                        "minLength": 1,
+                                        "type": "string"
+                                    }
+                                ],
+                                "description": "Id or short_id of an existing insight."
+                            }
+                        },
+                        "required": ["insight_id"],
+                        "type": "object"
+                    }
+                ]
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "type": "array"
+        },
+        "validate": {
+            "description": "'run' (default) runs every new tile's query once before writing anything, which catches unknown events, bad HogQL and bad filters. 'schema' checks the shape only.",
+            "enum": ["run", "schema"],
+            "type": "string"
+        }
+    },
+    "required": ["name", "tiles"],
+    "type": "object"
+}
