@@ -16,6 +16,7 @@ import hooks_featureFlagGetDefinition from '@/tools/featureFlags/conditionIdHook
 import hooks_featureFlagRollOutToEveryone from '@/tools/featureFlags/conditionIdHooks'
 import hooks_featureFlagSetReleaseConditionRollout from '@/tools/featureFlags/conditionIdHooks'
 import hooks_featureFlagsMyFlagsRetrieve from '@/tools/featureFlags/conditionIdHooks'
+import hooks_featureFlagGetAll from '@/tools/featureFlags/listRolloutHooks'
 import hooks_updateFeatureFlag from '@/tools/featureFlags/updateFeatureFlagHooks'
 import { transformRequestBody, withToolHooks } from '@/tools/tool-hooks'
 import { withPostHogUrl, pickResponseFields, type WithPostHogUrl } from '@/tools/tool-utils'
@@ -274,56 +275,70 @@ const featureFlagGetAll = (): ToolBase<
 > => ({
     name: 'feature-flag-get-all',
     schema: FeatureFlagGetAllSchema(),
-    handler: async (context: Context, params: z.infer<ReturnType<typeof FeatureFlagGetAllSchema>>) => {
-        const projectId = await context.stateManager.getProjectId()
-        const result = await context.api.request<Schemas.PaginatedFeatureFlagList>({
-            method: 'GET',
-            path: `/api/projects/${encodeURIComponent(String(projectId))}/feature_flags/`,
-            query: {
-                active: params.active,
-                archived: params.archived,
-                created_by_id: params.created_by_id,
-                deleted: params.deleted,
-                eligible_for_experiment: params.eligible_for_experiment,
-                evaluation_runtime: params.evaluation_runtime,
-                excluded_properties: params.excluded_properties,
-                excluded_tags: params.excluded_tags,
-                has_evaluation_contexts: params.has_evaluation_contexts,
-                key: params.key,
-                limit: params.limit,
-                offset: params.offset,
-                search: params.search,
-                tags: params.tags,
-                type: params.type,
-            },
-        })
-        const filtered = {
-            ...result,
-            results: (result.results ?? []).map((item: any) =>
-                pickResponseFields(item, [
-                    'id',
-                    'key',
-                    'name',
-                    'updated_at',
-                    'status',
-                    'tags',
-                    'last_called_at',
-                    'active',
-                    'created_at',
-                ])
-            ),
-        } as typeof result
-        return await withPostHogUrl(
-            context,
-            {
-                ...filtered,
-                results: await Promise.all(
-                    (filtered.results ?? []).map((item) => withPostHogUrl(context, item, `/feature-flags/${item.id}`))
+    handler: withToolHooks(
+        hooks_featureFlagGetAll,
+        async (context: Context, params: z.infer<ReturnType<typeof FeatureFlagGetAllSchema>>) => {
+            const projectId = await context.stateManager.getProjectId()
+            const result = await context.api.request<Schemas.PaginatedFeatureFlagList>({
+                method: 'GET',
+                path: `/api/projects/${encodeURIComponent(String(projectId))}/feature_flags/`,
+                query: {
+                    active: params.active,
+                    archived: params.archived,
+                    created_by_id: params.created_by_id,
+                    deleted: params.deleted,
+                    eligible_for_experiment: params.eligible_for_experiment,
+                    evaluation_runtime: params.evaluation_runtime,
+                    excluded_properties: params.excluded_properties,
+                    excluded_tags: params.excluded_tags,
+                    has_evaluation_contexts: params.has_evaluation_contexts,
+                    key: params.key,
+                    limit: params.limit,
+                    offset: params.offset,
+                    search: params.search,
+                    tags: params.tags,
+                    type: params.type,
+                },
+            })
+            const filtered = {
+                ...result,
+                results: (result.results ?? []).map((item: any) =>
+                    pickResponseFields(item, [
+                        'id',
+                        'key',
+                        'name',
+                        'updated_at',
+                        'status',
+                        'tags',
+                        'last_called_at',
+                        'active',
+                        'created_at',
+                        'filters.groups.*.properties.*.key',
+                        'filters.groups.*.properties.*.type',
+                        'filters.groups.*.properties.*.operator',
+                        'filters.groups.*.properties.*.value',
+                        'filters.groups.*.rollout_percentage',
+                        'filters.groups.*.variant',
+                        'filters.multivariate.variants.*.key',
+                        'filters.multivariate.variants.*.rollout_percentage',
+                        'filters.aggregation_group_type_index',
+                    ])
                 ),
-            },
-            '/feature-flags'
-        )
-    },
+            } as typeof result
+            return await withPostHogUrl(
+                context,
+                {
+                    ...filtered,
+                    results: await Promise.all(
+                        (filtered.results ?? []).map((item) =>
+                            withPostHogUrl(context, item, `/feature-flags/${item.id}`)
+                        )
+                    ),
+                },
+                '/feature-flags'
+            )
+        }
+    ),
 })
 
 const FeatureFlagGetDefinitionSchema = () => {

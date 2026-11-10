@@ -287,6 +287,7 @@ tools:
             idempotent: true
         enrich_url: '{id}'
         list: true
+        hooks: featureFlags/listRolloutHooks
         title: Get all feature flags
         description: >
             Get feature flags in the current project. Supports list filters including search by feature flag key or name
@@ -296,8 +297,11 @@ tools:
             flag with an empty `groups` list in `filters`, even when `feature-flags-status-retrieve` calls it stale.
             Stale flags are cleanup candidates, not proof that a flag is unused. Disabled flags are not checked for
             staleness, so `status: ACTIVE` on a disabled flag is expected. Each row carries `status`, `last_called_at`,
-            `active` and `created_at`. For the reason behind one flag's status, and its rollout summary, use
-            `feature-flags-status-retrieve`.
+            `active`, `tags`, `created_at` and `rollout`, a one-line summary of its release conditions and variants
+            (for example `75% where $browser = Chrome; 100% of everyone | variants: control 50%, test 50%`), so listing
+            flags with their rollout needs no SQL and no per-flag call. Filter by tag with `tags`. For the reason behind
+            one flag's status, use `feature-flags-status-retrieve`; for the full conditions, use
+            `feature-flag-get-definition`.
         param_overrides:
             search:
                 description:
@@ -322,6 +326,15 @@ tools:
                 - last_called_at
                 - active
                 - created_at
+                - filters.groups.*.properties.*.key
+                - filters.groups.*.properties.*.type
+                - filters.groups.*.properties.*.operator
+                - filters.groups.*.properties.*.value
+                - filters.groups.*.rollout_percentage
+                - filters.groups.*.variant
+                - filters.multivariate.variants.*.key
+                - filters.multivariate.variants.*.rollout_percentage
+                - filters.aggregation_group_type_index
     feature-flag-get-definition:
         operation: feature_flags_retrieve
         enabled: true

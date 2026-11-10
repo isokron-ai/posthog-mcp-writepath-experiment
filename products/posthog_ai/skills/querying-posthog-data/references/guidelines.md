@@ -426,9 +426,11 @@ SELECT id, name, count FROM system.cohorts WHERE name ILIKE '%paying%' AND NOT d
 **List feature flags:**
 
 ```sql
-SELECT key, name, rollout_percentage
+SELECT id, key, name, JSONExtractRaw(filters, 'groups') AS release_conditions
 FROM system.feature_flags
 WHERE NOT deleted
 ORDER BY created_at DESC
 LIMIT 20
 ```
+
+Each release condition in `filters.groups` carries its own `rollout_percentage`. The top-level `rollout_percentage` column is a legacy field and is usually null, so do not read a flag's rollout from it. `system.feature_flags` has no `active` or `tags` column: to list flags with their state, tags and a one-line rollout summary, call `feature-flag-get-all` instead.
