@@ -317,9 +317,10 @@ function makeExecSchema(commandReference: string): z.ZodObject<{ command: z.ZodS
     })
 }
 
+/** Splits on the first whitespace of any kind: a JSON body often starts on the line after the tool name. */
 function parseCommand(input: string): { verb: string; rest: string } {
     const trimmed = input.trim()
-    const idx = trimmed.indexOf(' ')
+    const idx = trimmed.search(/\s/)
     if (idx === -1) {
         return { verb: trimmed, rest: '' }
     }

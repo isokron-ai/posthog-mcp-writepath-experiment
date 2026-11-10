@@ -1450,6 +1450,24 @@ describe('exec tool', () => {
             const exec = createExec([tool])
             await expect(exec.handler(mockContext, { command })).resolves.toBeDefined()
         })
+
+        // A body on its own line used to be read as part of the tool name, so an existing
+        // tool came back as unknown.
+        it.each([
+            ['a JSON body on the line after the tool name', 'call mock-tool\n{"query": "SELECT 1"}'],
+            ['a pretty-printed JSON body on the next line', 'call mock-tool\n{\n  "query": "SELECT 1"\n}'],
+            ['a tab before the JSON body', 'call mock-tool\t{"query": "SELECT 1"}'],
+            ['a non-breaking space before the JSON body', 'call mock-tool\u00a0{"query": "SELECT 1"}'],
+            ['the tool name on the line after the verb', 'call\nmock-tool {"query": "SELECT 1"}'],
+        ])('passes the body to the tool with %s', async (_label, command) => {
+            const handler = vi.fn(async () => ({ ok: true }))
+            const tool = makeMockTool({ schema: z.object({ query: z.string().optional() }), handler })
+            const exec = createExec([tool])
+
+            await exec.handler(mockContext, { command })
+
+            expect(handler).toHaveBeenCalledWith(mockContext, { query: 'SELECT 1' })
+        })
     })
 
     describe('info command', () => {
@@ -2267,6 +2285,8 @@ describe('exec tool', () => {
             ['call --confirm my-tool {}', 'my-tool'],
             ['call --json --confirm my-tool {}', 'my-tool'],
             ['  call   my-tool   {}  ', 'my-tool'],
+            ['call my-tool\n{}', 'my-tool'],
+            ['call\tmy-tool\t{}', 'my-tool'],
         ])('extracts inner tool name from "%s"', (command, expected) => {
             expect(parseExecCallInnerToolName(command)).toBe(expected)
         })
