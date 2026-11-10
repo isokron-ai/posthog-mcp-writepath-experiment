@@ -65,6 +65,20 @@ function hasTestAccountFilterField(schema: ZodObjectAny): schema is z.ZodObject<
     return schema instanceof z.ZodObject && TEST_ACCOUNT_FILTER_FIELD in schema.shape
 }
 
+const ACTORS_SOURCE_FIELD = 'source'
+
+/**
+ * An actors query drills into a `source` insight query, and the backend runs that source
+ * as sent. So `filterTestAccounts` lives on the source, with the same hard `false` default.
+ */
+function actorsSourceSchema(schema: ZodObjectAny): z.ZodObject<z.ZodRawShape> | undefined {
+    if (!(schema instanceof z.ZodObject)) {
+        return undefined
+    }
+    const source = schema.shape[ACTORS_SOURCE_FIELD]
+    return source instanceof z.ZodObject && hasTestAccountFilterField(source) ? source : undefined
+}
+
 /**
  * Most generated query schemas hard-default `filterTestAccounts` to `false`, which
  * silently ignores the project's "Filter out internal and test users" default
@@ -79,6 +93,17 @@ function hasTestAccountFilterField(schema: ZodObjectAny): schema is z.ZodObject<
  * setting is unchecked.
  */
 function withoutTestAccountFilterDefault<T extends ZodObjectAny>(schema: T): T {
+    const source = actorsSourceSchema(schema)
+    if (source) {
+        const strippedSource = withoutTestAccountFilterDefault(source)
+        if (strippedSource !== source) {
+            // `extend` builds a new schema, which does not carry the description over.
+            const described = source.description ? strippedSource.describe(source.description) : strippedSource
+            return (schema as unknown as z.ZodObject<z.ZodRawShape>).extend({
+                [ACTORS_SOURCE_FIELD]: described,
+            }) as unknown as T
+        }
+    }
     if (!hasTestAccountFilterField(schema)) {
         return schema
     }
@@ -198,6 +223,10 @@ export function createQueryWrapper<T extends ZodObjectAny>(config: QueryWrapperC
             }
             if (hasTestAccountFilterField(schema)) {
                 await applyProjectTestAccountDefault(context, query)
+            }
+            const source = query[ACTORS_SOURCE_FIELD]
+            if (actorsSourceSchema(schema) && source !== null && typeof source === 'object') {
+                await applyProjectTestAccountDefault(context, source as Record<string, unknown>)
             }
             const baseUrl = context.api.getProjectBaseUrl(projectId)
             const effectiveOutputFormat = callerOutputFormat ?? config.outputFormat

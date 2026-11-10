@@ -401,6 +401,39 @@ describe('createQueryWrapper filterTestAccounts project default', () => {
         expect(tool.schema.safeParse({ series, filterTestAccounts: stringValue }).success).toBe(false)
     })
 
+    // An actors query carries the field on its `source`, and the backend runs the source as
+    // sent. Leaving the hard `false` default there lists internal users that the insight the
+    // agent is drilling into has excluded.
+    it.each([
+        ['omitted follows a checked project default', false, {}, true, true],
+        ['omitted stays unset when the project default is unchecked', false, {}, false, undefined],
+        ['explicit false wins over a checked project default', false, { filterTestAccounts: false }, true, false],
+        ['explicit true wins over an unchecked project default', false, { filterTestAccounts: true }, false, true],
+        ['an intentional true schema default survives an unchecked project default', true, {}, false, true],
+    ] as const)(
+        'on the source of an actors query, %s',
+        async (_name, schemaDefault, sourceExtra, projectDefault, expected) => {
+            const trendsActors = vi.fn().mockResolvedValue({ results: [], query: {} })
+            const context = createMockContext(vi.fn(), projectDefault)
+            vi.mocked(context.api.query).mockReturnValue({ trendsActors } as unknown as ReturnType<
+                Context['api']['query']
+            >)
+            const schema = z.object({
+                day: z.string().optional(),
+                source: makeSchema(schemaDefault)
+                    .extend({ kind: z.literal('TrendsQuery').default('TrendsQuery') })
+                    .describe('The source insight query.'),
+            })
+            const tool = createQueryWrapper({ name: 'test-actors', schema, kind: 'InsightActorsQuery' })()
+
+            await tool.handler(context, tool.schema.parse({ source: { series, ...sourceExtra } }))
+
+            expect(trendsActors.mock.calls[0]![0].query.source.filterTestAccounts).toBe(expected)
+            expect(trendsActors.mock.calls[0]![0].query).not.toHaveProperty('filterTestAccounts')
+            expect((tool.schema.shape.source as z.ZodType).description).toBe('The source insight query.')
+        }
+    )
+
     it('does not inject the field into schemas that lack it', async () => {
         const runQuery = vi.fn().mockResolvedValue({ results: [] })
         const context = createMockContext(runQuery, true)
