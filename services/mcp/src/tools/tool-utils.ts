@@ -35,8 +35,8 @@ export async function withPostHogUrl<T>(context: Context, result: T, path: strin
  * array is wrapped as `{ results, _agentNote }`, mirroring `withPostHogUrl`.
  */
 export type WithAgentNote<T = unknown> = T extends readonly (infer U)[]
-    ? { results: U[]; _agentNote: string }
-    : T & { _agentNote: string }
+    ? { results: U[]; _agentNote?: string }
+    : T & { _agentNote?: string }
 
 /** Adds `_agentNote` to a result. Wraps raw arrays in `{ results, _agentNote }` (see type above). */
 export function withAgentNote<T>(result: T, note: string): WithAgentNote<T> {
@@ -44,6 +44,38 @@ export function withAgentNote<T>(result: T, note: string): WithAgentNote<T> {
         return { results: result, _agentNote: note } as unknown as WithAgentNote<T>
     }
     return { ...result, _agentNote: note } as WithAgentNote<T>
+}
+
+/**
+ * Adds `_agentNote` the first time `toolName` answers in this MCP session or conversation, and
+ * returns the result without it afterwards. A raw array is wrapped as `{ results }` either way,
+ * so the shape does not change between the first call and later ones.
+ *
+ * Over the friction session the notes were 7,807 tokens of write echoes: insight-create's
+ * 649-token note came back six times. The note's offers (alerts, subscriptions) each say to make
+ * them once per conversation, so the first copy is the one the agent acts on.
+ *
+ * Without a session to remember it in (a stateless request, the CLI) every call carries the note,
+ * as before.
+ */
+export async function withAgentNoteOnce<T>(
+    context: Context,
+    toolName: string,
+    result: T,
+    note: string
+): Promise<WithAgentNote<T>> {
+    const stateManager = context.stateManager as Partial<Context['stateManager']> | undefined
+    const first =
+        typeof stateManager?.markShownOnce === 'function'
+            ? await stateManager.markShownOnce(`agentNote:${toolName}`)
+            : true
+    if (first) {
+        return withAgentNote(result, note)
+    }
+    if (Array.isArray(result)) {
+        return { results: result } as unknown as WithAgentNote<T>
+    }
+    return result as WithAgentNote<T>
 }
 
 const INFORMATIONAL_RESPONSE_NOTICE =

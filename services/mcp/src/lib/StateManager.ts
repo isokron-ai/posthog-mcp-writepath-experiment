@@ -98,6 +98,35 @@ export class StateManager {
         }
     }
 
+    /**
+     * Records that something keyed by `key` was shown in this MCP session or conversation, and
+     * says whether this is the first time. Returns true when there is no session to remember it
+     * in, or when the session store fails, so a caller that gates repeated text on it repeats
+     * rather than drops it.
+     */
+    async markShownOnce(key: string): Promise<boolean> {
+        if (!this._sessionCache) {
+            return true
+        }
+        try {
+            return await this._sessionCache.setIfAbsent(`shown:${key}`, true)
+        } catch {
+            return true
+        }
+    }
+
+    /** Whether `markShownOnce(key)` has already run in this session. False without a session. */
+    async wasShown(key: string): Promise<boolean> {
+        if (!this._sessionCache) {
+            return false
+        }
+        try {
+            return (await this._sessionCache.get(`shown:${key}`)) === true
+        } catch {
+            return false
+        }
+    }
+
     private async _fetchUser(): Promise<ApiUser> {
         const userResult = await this._api.users().me()
         if (!userResult.success) {

@@ -12,7 +12,7 @@ import {
 import { castBooleanToString } from '@/tools/cast-helpers'
 import {
     withPostHogUrl,
-    withAgentNote,
+    withAgentNoteOnce,
     withTextProjection,
     omitResponseFields,
     stripNullFields,
@@ -364,7 +364,9 @@ const visionGroupsGet = (): ToolBase<ReturnType<typeof VisionGroupsGetSchema>, W
                 variant: params.variant,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-groups-get',
             result,
             'A cluster is a pointer, not a finding: the counts say where to look, and the members say what happened. Read a few members, and the recordings behind them, before you describe or report the issue.\n'
         )
@@ -399,7 +401,9 @@ const visionGroupsList = (): ToolBase<
                 variant: params.variant,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-groups-list',
             result,
             'A cluster is a pointer, not a finding: the counts say where to look, and the members say what happened. Read a few members, and the recordings behind them, before you describe or report the issue.\n'
         )
@@ -468,7 +472,9 @@ const visionObservationsGet = (): ToolBase<
                 watch_group: params.watch_group,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-observations-get',
             await withPostHogUrl(context, result, `/replay/${result.session_id}`),
             "`_posthogUrl` opens the recording this observation analysed. `scanner_result.model_output.reasoning_segments` interleaves prose with `chip` segments, and a chip's `timestamp_ms` is the recording-relative offset of the moment being cited — append `?t=<seconds>` (`timestamp_ms` / 1000, rounded down) to that URL to seek straight to it. When you report a finding to someone, deep-link the one or two moments it turns on rather than only describing them. A summarizer's `model_output.chapters` breaks the recording into ordered parts; each chapter's `start_ms` seeks the same way.\n"
         )
@@ -553,7 +559,9 @@ const visionObservationsList = (): ToolBase<
                 },
             })
             return withTextProjection(
-                withAgentNote(
+                await withAgentNoteOnce(
+                    context,
+                    'vision-observations-list',
                     await withPostHogUrl(
                         context,
                         {
@@ -1035,7 +1043,9 @@ const visionScannersCreate = (): ToolBase<
             path: `/api/projects/${encodeURIComponent(String(projectId))}/vision/scanners/`,
             body,
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-scanners-create',
             await withPostHogUrl(context, result, `/replay-vision/${result.id}`),
             'A new scanner runs the prompt as written, and the first sweep is where its weaknesses show. Tell the person that rating its results thumbs up or down, ideally with a short note, teaches the scanner, and that `_posthogUrl` opens the scanner where they do it. There is nothing to rate yet, so this is a closing sentence for them, not a step for you.\n'
         )
@@ -1238,7 +1248,9 @@ const visionScannersHighlightFeed = (): ToolBase<
                 'results.*.observation.triggered_by_user',
             ])
         ) as typeof result
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-scanners-highlight-feed',
             filtered,
             'Point the person at one or two recordings with a one-line reason each, rather than listing the whole feed.\n'
         )
@@ -1398,7 +1410,9 @@ const visionScannersObservationsGet = (): ToolBase<
                 watch_group: params.watch_group,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-scanners-observations-get',
             await withPostHogUrl(context, result, `/replay/${result.session_id}`),
             "`_posthogUrl` opens the recording this observation analysed. `scanner_result.model_output.reasoning_segments` interleaves prose with `chip` segments, and a chip's `timestamp_ms` is the recording-relative offset of the moment being cited — append `?t=<seconds>` (`timestamp_ms` / 1000, rounded down) to that URL to seek straight to it. When you report a finding to someone, deep-link the one or two moments it turns on rather than only describing them. A summarizer's `model_output.chapters` breaks the recording into ordered parts; each chapter's `start_ms` seeks the same way.\n"
         )
@@ -1450,7 +1464,9 @@ const visionScannersObservationsList = (): ToolBase<
                 },
             })
             return withTextProjection(
-                withAgentNote(
+                await withAgentNoteOnce(
+                    context,
+                    'vision-scanners-observations-list',
                     await withPostHogUrl(
                         context,
                         {
@@ -1512,7 +1528,9 @@ const visionScannersObservationsStats = (): ToolBase<
                 watch_group: params.watch_group,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-scanners-observations-stats',
             result,
             'When `status_counts.succeeded` is above 10 and `labels.up_total` + `labels.down_total` is under 5, this scanner has results almost nobody has rated, so it has little to learn from. Say so, and ask the person to rate a few results. Record their verdicts with `vision-observations-label-create` rather than supplying your own.\n'
         )
@@ -1796,7 +1814,9 @@ const visionScannersVariantsList = (): ToolBase<
             method: 'GET',
             path: `/api/projects/${encodeURIComponent(String(projectId))}/vision/scanners/${encodeURIComponent(String(params.scanner_id))}/variants/`,
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-scanners-variants-list',
             result,
             "The observation, people and session counts are counted live and are the numbers to trust. Digest and difference counts come from the variant analysis scout, so read them as shares of each variant's `analysis_observations`, not of `observations`. Balanced sampling gives small variants a higher `sampling_rate`, so even observation counts do not mean even traffic. To read one variant's summaries, call `vision-scanners-observations-list` with `variant` set to its key.\n"
         )
@@ -1823,7 +1843,9 @@ const visionThemesGet = (): ToolBase<ReturnType<typeof VisionThemesGetSchema>, W
                 scanner_id: params.scanner_id,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-themes-get',
             result,
             'A cluster is a pointer, not a finding: the counts say where to look, and the members say what happened. Read a few members, and the recordings behind them, before you describe or report the issue.\n'
         )
@@ -1855,7 +1877,9 @@ const visionThemesList = (): ToolBase<
                 scanner_id: params.scanner_id,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'vision-themes-list',
             result,
             'A cluster is a pointer, not a finding: the counts say where to look, and the members say what happened. Read a few members, and the recordings behind them, before you describe or report the issue.\n'
         )

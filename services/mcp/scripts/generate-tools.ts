@@ -1111,12 +1111,15 @@ function buildExpandableFieldsExtension(config: ToolConfig): string {
 // Response enrichment templates
 // ------------------------------------------------------------------
 
-function buildEnrichment(config: ToolConfig, category: CategoryConfig, resultVar = 'result'): string {
+function buildEnrichment(config: ToolConfig, category: CategoryConfig, resultVar = 'result', toolName = ''): string {
     const baseUrl = config.url_prefix ?? category.url_prefix
     // agent_note wraps the final returned expression so the note rides the same object the
-    // agent reads — point-of-use guidance without growing the tool description.
+    // agent reads — point-of-use guidance without growing the tool description. It rides only
+    // the first response of each tool in an MCP session; later calls return the same shape
+    // without it, so a run of six insight-creates carries the note once, not six times.
     const noteLiteral = config.agent_note ? JSON.stringify(config.agent_note) : null
-    const noted = (expr: string): string => (noteLiteral ? `withAgentNote(${expr}, ${noteLiteral})` : expr)
+    const noted = (expr: string): string =>
+        noteLiteral ? `await withAgentNoteOnce(context, '${toolName}', ${expr}, ${noteLiteral})` : expr
     const informationalWrapper = config.response?.informational_wrapper
     // The text projection wraps last, so it can name the `_posthogUrl` each row picked up from enrichment.
     const textInclude = config.response?.text_include
@@ -1406,7 +1409,7 @@ function generateToolCode(
 
     // Response enrichment — adds _posthogUrl for "View in PostHog" links
     const enrichmentVar = responseFilter.code ? 'filtered' : 'result'
-    handlerBody += buildEnrichment(config, category, enrichmentVar)
+    handlerBody += buildEnrichment(config, category, enrichmentVar, toolName)
 
     // Compute the result type for the ToolBase generic parameter
     let resultType: string
@@ -1782,7 +1785,7 @@ function generateCustomSchemaToolCode(
     handlerBody += responseFilter.code
 
     const enrichmentVar = responseFilter.code ? 'filtered' : 'result'
-    handlerBody += buildEnrichment(config, category, enrichmentVar)
+    handlerBody += buildEnrichment(config, category, enrichmentVar, toolName)
 
     let baseSchemaExpr = config.input_schema as string
     const toolInputsImports: string[] = config.input_schema ? [config.input_schema] : []
@@ -2224,7 +2227,7 @@ function generateCategoryFile(
         toolUtilsValueImports.push('withPostHogUrl')
     }
     if (hasAgentNote) {
-        toolUtilsValueImports.push('withAgentNote')
+        toolUtilsValueImports.push('withAgentNoteOnce')
     }
     for (const imp of requiredToolUtilsValueImports) {
         toolUtilsValueImports.push(imp)

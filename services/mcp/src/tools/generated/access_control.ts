@@ -11,7 +11,7 @@ import {
 } from '@/tools/confirmed-action-runtime'
 import {
     withPostHogUrl,
-    withAgentNote,
+    withAgentNoteOnce,
     omitResponseFields,
     type WithPostHogUrl,
     type WithAgentNote,
@@ -181,7 +181,9 @@ const accessControlDefaultRuleSetExecute = (): ToolBase<
             path: `/api/organizations/${encodeURIComponent(String(orgId))}/projects/${encodeURIComponent(String(id))}/access_control_default_rules/`,
             body,
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-default-rule-set',
             result,
             'A member rule or a role rule on the same scope still wins over this default. Verify the result with access-control-defaults-get or access-control-members-list.\n'
         )
@@ -215,7 +217,9 @@ const accessControlDefaultsGet = (): ToolBase<
             path: `/api/organizations/${encodeURIComponent(String(orgId))}/projects/${encodeURIComponent(String(id))}/access_control_defaults/`,
         })
         const filtered = omitResponseFields(result, ['can_edit']) as typeof result
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-defaults-get',
             filtered,
             'access-control-members-list or access-control-roles-list show who deviates from this baseline. access-control-default-objects-list and access-control-default-properties-list show defaults set on single objects or properties.\n'
         )
@@ -258,7 +262,9 @@ const accessControlMemberObjectsList = (): ToolBase<
                 member_id: params.member_id,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-member-objects-list',
             await withPostHogUrl(context, result, '/settings/environment-access-control'),
             "The member's tool-level access and their `role_ids` are on access-control-members-list. Object rules from the member's roles are on access-control-role-objects-list, one call per role id.\n"
         )
@@ -303,7 +309,9 @@ const accessControlMemberPropertiesList = (): ToolBase<
                 member_id: params.member_id,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-member-properties-list',
             await withPostHogUrl(context, result, '/settings/environment-access-control'),
             "Property rules from the member's roles are on access-control-role-properties-list, one call per id in the member's `role_ids` from access-control-members-list. Rules for everyone in the project are on access-control-default-properties-list.\n"
         )
@@ -419,7 +427,9 @@ const accessControlMemberRuleSetExecute = (): ToolBase<
             path: `/api/organizations/${encodeURIComponent(String(orgId))}/projects/${encodeURIComponent(String(id))}/access_control_member_rules/`,
             body,
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-member-rule-set',
             result,
             'Organization admins and owners have full access regardless of rules. Verify the result with access-control-members-list and `member_id`.\n'
         )
@@ -473,7 +483,9 @@ const accessControlMembersList = (): ToolBase<
                 ])
             ),
         } as typeof result
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-members-list',
             await withPostHogUrl(context, filtered, '/settings/environment-access-control'),
             'For a question about one object, for example a dashboard or a table, call access-control-member-objects-list; for a person or event property, access-control-member-properties-list. Rules a role sets on objects or properties are only on the role-objects and role-properties tools. Level bounds per tool are on access-control-defaults-get.\n'
         )
@@ -669,7 +681,9 @@ const accessControlRoleRuleSetExecute = (): ToolBase<
             path: `/api/organizations/${encodeURIComponent(String(orgId))}/projects/${encodeURIComponent(String(id))}/access_control_role_rules/`,
             body,
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-role-rule-set',
             result,
             'Who is in the role is on role-members-list. Verify the result with access-control-roles-list and `role_id`.\n'
         )
@@ -723,7 +737,9 @@ const accessControlRolesList = (): ToolBase<
                 ])
             ),
         } as typeof result
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'access-control-roles-list',
             await withPostHogUrl(context, filtered, '/settings/environment-access-control'),
             "A member's enforced level already includes their roles, so for a person use access-control-members-list. For a role's rules on one object or property, call access-control-role-objects-list or access-control-role-properties-list. A member's roles are `role_ids` on access-control-members-list, and role-members-list gives who is in a role.\n"
         )

@@ -24,7 +24,7 @@ export type SessionScopedState = {
     activeOrgId: string | null | undefined
     appliedPinProjectId: string | undefined
     appliedPinOrgId: string | undefined
-}
+} & Record<PrefixedString<'shown'>, true | undefined>
 
 /**
  * The resolver snapshots the session selection and optional pin per request.

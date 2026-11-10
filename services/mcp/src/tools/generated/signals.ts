@@ -7,7 +7,7 @@ import { SignalReportFeedbackNoteSchema, SignalReportFeedbackSentimentSchema } f
 import { normalizeParamAliases } from '@/tools/cast-helpers'
 import {
     withPostHogUrl,
-    withAgentNote,
+    withAgentNoteOnce,
     pickResponseFields,
     withInformationalResponse,
     type WithPostHogUrl,
@@ -308,7 +308,9 @@ const inboxReportArtefactsList = (): ToolBase<
                 offset: params.offset,
             },
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'inbox-report-artefacts-list',
             await withPostHogUrl(context, result, '/inbox'),
             "Find the newest applicable `## Verification plan`. Treat it as guidance, not evidence. Confirm the current state before work and the outcome after the chosen resolution. Missing or inconclusive evidence does not show resolution. If the issue no longer occurs, record the result and reassess the report. If no plan applies, verify the issue from the report's evidence.\n"
         )
@@ -896,7 +898,9 @@ const inboxReportsList = (): ToolBase<
                 ])
             ),
         } as typeof result
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'inbox-reports-list',
             await withPostHogUrl(
                 context,
                 {
@@ -965,7 +969,9 @@ const inboxReportsRetrieve = (): ToolBase<
             method: 'GET',
             path: `/api/projects/${encodeURIComponent(String(projectId))}/signals/reports/${encodeURIComponent(String(params.id))}/`,
         })
-        return withAgentNote(
+        return await withAgentNoteOnce(
+            context,
+            'inbox-reports-retrieve',
             await withPostHogUrl(context, result, `/inbox/${result.id}`),
             "You may inspect reports without claiming them. A claim indicates active work that should not be duplicated. Before claiming a report, read the report and its work log. If you decide to begin working to fix the issues identified in the report, call inbox-reports-claim to record that you are working on it, before you change any code. If the report's `assignee` shows that another person or their agent is working on it, tell your user and ask before you take it over. Taking ownership from another actor requires `takeover=true`, and from another person also `takeover_claim_id`.\nBefore work, read the work log and follow the newest applicable `## Verification plan`. Confirm the current state before work and the outcome after the chosen resolution.\nIf you create a pull request implementing the remediation, call inbox-reports-claim with the returned `claim_id` and `pull_requests` to add it. Send all currently known PRs together, including stacks and cross-repository changes. Release the claim if you stop work without completing the report. If the report should be considered resolved without a pull request, or PostHog cannot observe the pull request merge, resolve it with inbox-reports-set-state.\n"
         )
