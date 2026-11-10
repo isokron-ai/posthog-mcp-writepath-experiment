@@ -711,6 +711,40 @@ describe('ApiClient', () => {
             expect(mockFetch).toHaveBeenCalledTimes(1)
         })
 
+        // A sign-in or challenge page from a proxy, or JSON cut short, used to come back as the
+        // tool's result. On a write that reads as "created" when nothing may have been written.
+        it.each([
+            {
+                label: 'an HTML page',
+                body: '<html><body>Sign in</body></html>',
+                contentType: 'text/html; charset=utf-8',
+            },
+            { label: 'JSON cut short', body: '{"id": 12, "name": "ab', contentType: 'application/json' },
+        ])('reports a 200 that carries $label as a failure, not a result', async ({ body, contentType }) => {
+            const respond = (): Response =>
+                new Response(body, { status: 200, headers: { 'content-type': contentType } })
+            const mockFetch = stubFetch(respond(), respond())
+            const client = new ApiClient({ apiToken: 'phx_test', baseUrl: 'https://us.posthog.com' })
+
+            const write = await settle(client.request({ method: 'POST', path: '/api/projects/17/annotations/' }))
+            const read = await settle(client.request({ method: 'GET', path: '/api/projects/17/annotations/' }))
+
+            expect(write).toBeInstanceOf(PostHogTransportError)
+            expect((write as PostHogTransportError).retryable).toBe(false)
+            expect((write as PostHogTransportError).message).toContain('not valid JSON')
+            expect((write as PostHogTransportError).message).toContain('may have been applied upstream')
+            expect(read).toBeInstanceOf(PostHogTransportError)
+            expect((read as PostHogTransportError).retryable).toBe(true)
+            expect(mockFetch).toHaveBeenCalledTimes(2)
+        })
+
+        it('still returns a plain-text 200 body as text', async () => {
+            stubFetch(new Response('pong', { status: 200, headers: { 'content-type': 'text/plain' } }))
+            const client = new ApiClient({ apiToken: 'phx_test', baseUrl: 'https://us.posthog.com' })
+
+            await expect(client.request({ method: 'GET', path: '/api/projects/17/ping/' })).resolves.toBe('pong')
+        })
+
         const stubStalledFetch = (): ReturnType<typeof vi.fn> => {
             const mockFetch = vi.fn(
                 (_url: string, init?: RequestInit) =>

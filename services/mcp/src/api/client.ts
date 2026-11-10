@@ -791,6 +791,25 @@ export class ApiClient {
                 const rawData = JSON.parse(bodyText)
                 return { success: true, data: rawData as T }
             } catch {
+                // A body sent as JSON that does not parse was cut short or altered on the way.
+                // An HTML page is a proxy or sign-in page answering in place of the API. Passing
+                // either on as data would report a call as a success when its outcome is unknown.
+                const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+                if (contentType.includes('json') || contentType.includes('html')) {
+                    console.error(`[API] Unreadable ${response.status} response on ${method} ${url}: ${contentType}`)
+                    return {
+                        success: false,
+                        error: new PostHogTransportError({
+                            url,
+                            method,
+                            attempts: transportRetries + 1,
+                            retryable: isSafeMethod,
+                            cause: new Error(
+                                `the response had status ${response.status} but its body was not valid JSON (content type ${contentType})`
+                            ),
+                        }),
+                    }
+                }
                 return { success: true, data: bodyText as T }
             }
         }
