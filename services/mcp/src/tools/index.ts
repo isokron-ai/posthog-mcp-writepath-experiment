@@ -5,6 +5,8 @@ import { filterStaffOnlyTools } from '@/lib/staff-only-tools'
 import getLLMCosts from './aiObservability/getLLMCosts'
 import parserRecipeCreate from './aiObservability/parserRecipeCreate'
 import parserRecipeReference from './aiObservability/parserRecipeReference'
+// Atomic writes and batches (validate-first batches, dashboard with tiles, version-checked partial updates)
+import { ATOMIC_TOOLS } from './atomic'
 // Debug
 import debugMcpUiApps from './debug/debugMcpUiApps'
 // Experiments (hand-written — CRUD + lifecycle are codegen in generated/experiments.ts)
@@ -164,6 +166,9 @@ export const TOOL_MAP: Record<string, () => ToolBase<ZodObjectAny>> = {
 
     // Skills — deprecated llma-skill-* aliases forwarding to the renamed skill-* tools.
     ...SKILL_DEPRECATED_ALIASES,
+
+    // Atomic writes and batches — see docs/atomic-and-batch-tools.md.
+    ...ATOMIC_TOOLS,
 }
 
 /** Build one tool by name, from the hand-written and generated registries alike. */

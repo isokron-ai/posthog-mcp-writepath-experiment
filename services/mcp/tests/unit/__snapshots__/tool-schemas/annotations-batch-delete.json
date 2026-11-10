@@ -1,0 +1,26 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "dry_run": {
+            "description": "Check that every annotation exists and report what would be deleted, without deleting.",
+            "type": "boolean"
+        },
+        "ids": {
+            "description": "Ids of the annotations to soft-delete, at most 50 per call.",
+            "items": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+        },
+        "stop_on_error": {
+            "description": "Start no further deletes after the first failed one. The rest are reported as skipped.",
+            "type": "boolean"
+        }
+    },
+    "required": ["ids"],
+    "type": "object"
+}

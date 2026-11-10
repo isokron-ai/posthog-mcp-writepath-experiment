@@ -864,5 +864,63 @@
             "openWorldHint": true,
             "readOnlyHint": false
         }
+    },
+    "insights-batch-update": {
+        "description": "Change many insights in one call: name, description, favorited, tags (`tags` replaces them; `add_tags`/`remove_tags` edit them in place) or soft-delete (`deleted: true`, the same as insight-delete; insights have no separate archive). Each item takes an insight id or short_id. Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. add_tags/remove_tags items are version-checked: if the insight changed after validation, that item reports `conflict` and is not written.",
+        "category": "Product analytics",
+        "feature": "product_analytics",
+        "summary": "Update or soft-delete many insights in one call, with per-item results.",
+        "title": "Batch update insights",
+        "required_scopes": ["insight:write"],
+        "api_operations": [
+            "GET /api/projects/{project_id}/insights/",
+            "GET /api/projects/{project_id}/insights/{id}/",
+            "PATCH /api/projects/{project_id}/insights/{id}/"
+        ],
+        "search_keywords": ["bulk", "tag insights", "archive insights", "delete insights", "batch"],
+        "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
+    },
+    "annotations-batch-create": {
+        "description": "Create many annotations in one call. Each item has the same fields as annotation-create (content, date_marker, optional scope, dashboard_item, dashboard_id, emoji). Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. Retry-safe: with `skip_duplicates` (default true) an item whose content, date_marker and scope match a live annotation is reported `exists` with its id instead of being created again.",
+        "category": "Annotations",
+        "feature": "annotations",
+        "summary": "Create many annotations in one call, with per-item results.",
+        "title": "Batch create annotations",
+        "required_scopes": ["annotation:write"],
+        "api_operations": [
+            "GET /api/projects/{project_id}/annotations/",
+            "POST /api/projects/{project_id}/annotations/"
+        ],
+        "search_keywords": ["bulk", "annotations", "batch", "release notes"],
+        "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": false,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
+    },
+    "annotations-batch-delete": {
+        "description": "Soft-delete many annotations by id in one call, as annotation-delete does. Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. An id that does not exist or is already deleted is reported `not_found` and does not block the others.",
+        "category": "Annotations",
+        "feature": "annotations",
+        "summary": "Soft-delete many annotations in one call, with per-item results.",
+        "title": "Batch delete annotations",
+        "required_scopes": ["annotation:write"],
+        "api_operations": [
+            "GET /api/projects/{project_id}/annotations/{id}/",
+            "PATCH /api/projects/{project_id}/annotations/{id}/"
+        ],
+        "search_keywords": ["bulk", "annotations", "batch", "cleanup"],
+        "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
     }
 }

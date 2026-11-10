@@ -1,0 +1,103 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "dry_run": {
+            "description": "Validate every item and report what would change, without writing anything.",
+            "type": "boolean"
+        },
+        "items": {
+            "description": "The insights to change, at most 50 per call.",
+            "items": {
+                "additionalProperties": false,
+                "description": "One insight and the changes to make to it.",
+                "properties": {
+                    "add_tags": {
+                        "description": "Tags to add, keeping the existing ones.",
+                        "items": {
+                            "minLength": 1,
+                            "type": "string"
+                        },
+                        "maxItems": 50,
+                        "type": "array"
+                    },
+                    "deleted": {
+                        "const": true,
+                        "description": "Soft-delete the insight, as insight-delete does. Insights have no separate archive state.",
+                        "type": "boolean"
+                    },
+                    "description": {
+                        "anyOf": [
+                            {
+                                "maxLength": 400,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "New description. Null clears it."
+                    },
+                    "favorited": {
+                        "description": "Star or unstar the insight.",
+                        "type": "boolean"
+                    },
+                    "id": {
+                        "anyOf": [
+                            {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                            },
+                            {
+                                "minLength": 1,
+                                "type": "string"
+                            }
+                        ],
+                        "description": "Insight id or short_id."
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "maxLength": 400,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "New name."
+                    },
+                    "remove_tags": {
+                        "description": "Tags to remove, keeping the others.",
+                        "items": {
+                            "minLength": 1,
+                            "type": "string"
+                        },
+                        "maxItems": 50,
+                        "type": "array"
+                    },
+                    "tags": {
+                        "description": "Replace all of the insight's tags with this list.",
+                        "items": {
+                            "minLength": 1,
+                            "type": "string"
+                        },
+                        "maxItems": 50,
+                        "type": "array"
+                    }
+                },
+                "required": ["id"],
+                "type": "object"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+        },
+        "stop_on_error": {
+            "description": "Start no further writes after the first failed one. The rest are reported as skipped.",
+            "type": "boolean"
+        }
+    },
+    "required": ["items"],
+    "type": "object"
+}
