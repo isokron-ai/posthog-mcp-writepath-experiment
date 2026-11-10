@@ -40,9 +40,8 @@ WRONG: Run `info` once for each missing schema.
 
 <bad-example>
 User: Show me a trends chart of signups
-Assistant: [Runs info query-trends, sees summary with hints, then immediately calls query-trends with guessed series structure]
-WRONG — info returned a summary with hint: "DO NOT GUESS – run `schema query-trends series` before populating this field".
-You MUST follow the hint and run `schema` before constructing the series field.
+Assistant: [Calls query-trends, gets a validation error that carries the `series` schema, then runs `info query-trends` and `schema query-trends series` before retrying]
+WRONG — the error already held the failing field's schema. Fix the call from it and retry.
 </bad-example>
 
 <bad-example>

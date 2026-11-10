@@ -30,7 +30,7 @@ posthog:exec({ "command": "tools" })            # fallback: list all
 # 2. Inspect once if the schema is missing
 posthog:exec({ "command": "info <tool_name>" })
 
-# 3. Drill into complex fields — REQUIRED for any field with a `hint`
+# 3. Drill into a complex field when its shape is unfamiliar
 posthog:exec({ "command": "schema <tool_name> <field_path>" })
 
 # 4. Call; reuse the schema

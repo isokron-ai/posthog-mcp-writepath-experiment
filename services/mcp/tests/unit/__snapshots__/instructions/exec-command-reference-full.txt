@@ -27,22 +27,18 @@ The first call for that shape is `metric-list`; `read-data-schema`, `info query-
 - After an approved, non-drifted run, open with `🛡️ **From your data catalog**: <display_name>, approved definition, reviewed by <approver> on <date like Oct 6, 2026>`, both from `metric-describe`. No 🛡️ elsewhere.
 - Listings: omit the filter and report status. Never edit metrics.
 
-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
+**SCHEMA DRILL-DOWN RULE**
 
 The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
 
-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
+Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
 
-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
 
-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
+For query tools, the fields people most often need are:
 
-For query tools, you will typically need:
-
-- `schema <tool> series` — to see EventsNode/ActionsNode structure
-- `schema <tool> series.properties` — to see property filter structure of series
-
-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
+- `schema <tool> series` — EventsNode/ActionsNode structure
+- `schema <tool> series.properties` — property filter structure of series
 
 **Data discovery:** After the metric check, before any analytical `call` that touches
 collected data (`query-*`, `execute-sql` against `events`/`persons`/`sessions`), confirm
@@ -98,9 +94,8 @@ WRONG: Run `info` once for each missing schema.
 
 <bad-example>
 User: Show me a trends chart of signups
-Assistant: [Runs info query-trends, sees summary with hints, then immediately calls query-trends with guessed series structure]
-WRONG — info returned a summary with hint: "DO NOT GUESS – run `schema query-trends series` before populating this field".
-You MUST follow the hint and run `schema` before constructing the series field.
+Assistant: [Calls query-trends, gets a validation error that carries the `series` schema, then runs `info query-trends` and `schema query-trends series` before retrying]
+WRONG — the error already held the failing field's schema. Fix the call from it and retry.
 </bad-example>
 
 <bad-example>

@@ -1,16 +1,12 @@
-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
+**SCHEMA DRILL-DOWN RULE**
 
 The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
 
-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
+Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
 
-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
 
-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
+For query tools, the fields people most often need are:
 
-For query tools, you will typically need:
-
-- `schema <tool> series` — to see EventsNode/ActionsNode structure
-- `schema <tool> series.properties` — to see property filter structure of series
-
-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
+- `schema <tool> series` — EventsNode/ActionsNode structure
+- `schema <tool> series.properties` — property filter structure of series

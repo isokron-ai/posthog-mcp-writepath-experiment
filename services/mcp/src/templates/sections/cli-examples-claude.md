@@ -46,8 +46,8 @@ WRONG: Run `info feature-flag-get-all` first.
 
 <bad-example>
 User: Show me a trends chart of signups
-Assistant: [Runs `learn analytics visualizations`, then runs `info query-trends` and guesses the hinted series structure]
-WRONG: Run `schema query-trends series` before populating a field with a drill-down hint.
+Assistant: [Runs `learn analytics visualizations`, then calls query-trends, gets a validation error carrying the `series` schema, and drills into `schema query-trends series` anyway]
+WRONG: The error already held the failing field's schema. Fix the call from it and retry.
 </bad-example>
 
 <bad-example>

@@ -38,22 +38,18 @@ Load all matching topics in one `learn` command first. Topics are cumulative.
 
 **Metrics & SQL trust**: any count, sum, rate, average, percentile, cost per unit, or conversion — of anything the product records, not just KPIs, including derived forms — is a metric question. Inspect the complete governed catalog with `metric-list` before `read-data-schema`, insights, domain tools, or raw SQL. Use `metric-describe` for a candidate's definition, including HogQL or SQL, before adapting it. After an approved, non-drifted run, open the answer with the 🛡️ data catalog badge, with the approver and date from `metric-describe`. Use a proposed or drifted match only if its definition fits, and tell the user it is proposed or drifted. Run `learn analytics` before writing SQL or joins — it covers certified tables/views and verified joins. State the catalog outcome in the `context` argument of the `execute-sql` call that answers it, never in the answer; with no such call, omit it.
 
-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
+**SCHEMA DRILL-DOWN RULE**
 
 The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
 
-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
+Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
 
-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
 
-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
+For query tools, the fields people most often need are:
 
-For query tools, you will typically need:
-
-- `schema <tool> series` — to see EventsNode/ActionsNode structure
-- `schema <tool> series.properties` — to see property filter structure of series
-
-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
+- `schema <tool> series` — EventsNode/ActionsNode structure
+- `schema <tool> series.properties` — property filter structure of series
 
 **Data discovery:** After the metric check, before any analytical `call` that touches
 collected data (`query-*`, `execute-sql` against `events`/`persons`/`sessions`), confirm
@@ -115,8 +111,8 @@ WRONG: Run `info feature-flag-get-all` first.
 
 <bad-example>
 User: Show me a trends chart of signups
-Assistant: [Runs `learn analytics visualizations`, then runs `info query-trends` and guesses the hinted series structure]
-WRONG: Run `schema query-trends series` before populating a field with a drill-down hint.
+Assistant: [Runs `learn analytics visualizations`, then calls query-trends, gets a validation error carrying the `series` schema, and drills into `schema query-trends series` anyway]
+WRONG: The error already held the failing field's schema. Fix the call from it and retry.
 </bad-example>
 
 <bad-example>

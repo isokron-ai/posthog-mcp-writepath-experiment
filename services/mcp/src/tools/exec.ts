@@ -26,6 +26,7 @@ import { APP_DATA_META_KEY } from '@/ui-apps/types'
 
 import { readParamAliases } from './cast-helpers'
 import { type ExecLearnCatalog, QUALIFIED_IDENTIFIER, tokenizeLearnInput } from './exec-learn'
+import { agentFacingInputSchema, describeFailingFieldSchemas } from './exec-schema-view'
 import {
     TOKEN_CHAR_LIMIT,
     compactInfoSchema,
@@ -1703,23 +1704,6 @@ function schemaHasOutputFormat(schema: ZodObjectAny): boolean {
     return current instanceof z.ZodObject && 'output_format' in current.shape
 }
 
-/**
- * Exec mode owns output encoding through the `--json` call flag, so tools must
- * not also advertise their `output_format` input — an agent passing
- * `output_format: "json"` would make the handler skip the server-side formatter
- * only for exec to TOON-encode the raw result anyway. `call` folds the flag back
- * into the field for tools that have it (see the `call` verb), so hiding it here
- * loses no capability.
- */
-function stripOutputFormatProperty(jsonSchema: Record<string, unknown>): Record<string, unknown> {
-    const properties = jsonSchema.properties as Record<string, unknown> | undefined
-    if (!properties || !('output_format' in properties)) {
-        return jsonSchema
-    }
-    const { output_format: _omitted, ...rest } = properties
-    return { ...jsonSchema, properties: rest }
-}
-
 /** A lowercase hyphenated token, the shape every name in the tool catalog takes. */
 const HINT_TOOL_NAME_PATTERN = /[a-z][a-z0-9]*(?:-[a-z0-9]+)+/g
 
@@ -2096,11 +2080,7 @@ export function createExecTool(
                     // validation: fields with a Zod `.default()` (e.g. a query `kind` discriminator)
                     // are optional and auto-filled. The default `io: 'output'` would list them as
                     // required, misrepresenting them as mandatory input the caller must supply.
-                    const fullSchema =
-                        tool.rawInputSchema ??
-                        stripOutputFormatProperty(
-                            z.toJSONSchema(tool.schema, { io: 'input' }) as Record<string, unknown>
-                        )
+                    const fullSchema = agentFacingInputSchema(tool)
                     // YAML for the top shape, but inputSchema stays as a JSON
                     // string dumped inside the YAML — JSON Schema is conventionally
                     // JSON and converting it to YAML obscures `$ref`, `oneOf`, etc.
@@ -2153,11 +2133,7 @@ export function createExecTool(
                     )
                     // See the `info` command: `io: 'input'` keeps this in sync with the advertised
                     // schema and validation, so `.default()` fields aren't shown as required.
-                    const fullJsonSchema =
-                        schemaTool.rawInputSchema ??
-                        stripOutputFormatProperty(
-                            z.toJSONSchema(schemaTool.schema, { io: 'input' }) as Record<string, unknown>
-                        )
+                    const fullJsonSchema = agentFacingInputSchema(schemaTool)
 
                     if (!fieldPath) {
                         // The bare `schema <tool>` view is always a summary. Any
@@ -2297,8 +2273,11 @@ export function createExecTool(
                         // classifies it as `validation`, not `internal`. The value-free
                         // descriptor rides along so the errored `$mcp_tool_call` records
                         // which field/alias was rejected — without the payload.
+                        // The agent also gets the summarized schema of each failing field,
+                        // so it can fix the call without an `info` or `schema` round trip.
+                        // Analytics keeps the short message above.
                         throw new ToolInputValidationError(
-                            message,
+                            `${message}${describeFailingFieldSchemas(tool, validation.error.issues)}`,
                             describeValidationError(validation.error, toolSchema)
                         )
                     }

@@ -184,7 +184,7 @@ describe('InstructionsFormatter', () => {
             expect(result).toContain('Using the `posthog` tool')
             expect(result).toContain('use the explicit target or active project without reconfirming it')
             expect(result.indexOf('If the target project is ambiguous')).toBe(0)
-            expect(result).toContain('Run `info <tool_name>` once if its schema is not in context.')
+            expect(result).toContain('Run `info <tool_name>` once if its shape is unfamiliar.')
             expect(result).not.toContain('### Basic functionality')
             expect(result).not.toContain('### Examples')
             expect(result).not.toContain('### PostHog knowledge sources')

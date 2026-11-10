@@ -7,9 +7,10 @@ Pass CLI-style commands in the `command` parameter for all PostHog interactions.
 **Requirements**
 
 1. Find unknown tools with `search` or `tools`.
-2. Run `info <tool_name>` once if its schema is not in context. Reuse it unless the tool changes or a schema error occurs.
+2. Run `info <tool_name>` once if its shape is unfamiliar. Reuse it unless the tool changes.
+3. If a call fails validation, fix it from the error: it carries the failing field's schema.
 
-Never guess a schema or run `info` before every call.
+Do not run `info` before every call.
 
 **Commands (in order):**
 
@@ -21,7 +22,7 @@ posthog:exec({ "command": "tools" })            # fallback: list all
 # 2. Inspect once if the schema is missing
 posthog:exec({ "command": "info <tool_name>" })
 
-# 3. Drill into complex fields — REQUIRED for any field with a `hint`
+# 3. Drill into a complex field when its shape is unfamiliar
 posthog:exec({ "command": "schema <tool_name> <field_path>" })
 
 # 4. Call; reuse the schema
