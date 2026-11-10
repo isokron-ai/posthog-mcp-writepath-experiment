@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
 
 import { STRUCTURED_CONTENT_ONLY_TEXT, type ToolResultPayload, UI_APP_RENDER_NOTE } from '@/lib/build-tool-result'
-import { PostHogApiError, ToolInputValidationError } from '@/lib/errors'
+import { ExecCommandError, PostHogApiError, ToolInputValidationError } from '@/lib/errors'
 import { estimateTokens } from '@/lib/estimate-tokens'
 import { buildQueryToolsBlock, buildToolDomainsCompact } from '@/lib/instructions'
 import { InstructionsFormatter } from '@/lib/instructions-formatter'
@@ -790,6 +790,28 @@ describe('exec tool', () => {
                     command: 'call mock-tool {not-json}',
                 })
             ).rejects.toThrow(/Invalid JSON input:/)
+        })
+
+        // These used to throw a TypeError from the `in` operator, which the executor
+        // records as an internal fault rather than a mistake in the command.
+        it.each([
+            ['null', 'null'],
+            ['5', 'a number'],
+            ['"text"', 'a string'],
+            ['true', 'a boolean'],
+            ['[1, 2]', 'an array'],
+        ])('rejects the JSON body %s as a typed command error', async (body, received) => {
+            const handler = vi.fn(async () => ({ ok: true }))
+            const exec = createExec([makeMockTool({ handler })])
+
+            const call = exec.handler(mockContext, { command: `call mock-tool ${body}` })
+
+            await expect(call).rejects.toBeInstanceOf(ExecCommandError)
+            await expect(call).rejects.toMatchObject({
+                reason: 'invalid_json',
+                message: `Invalid JSON input: expected a JSON object, received ${received}. Example: call mock-tool {"key": "value"}`,
+            })
+            expect(handler).not.toHaveBeenCalled()
         })
 
         it.each([
