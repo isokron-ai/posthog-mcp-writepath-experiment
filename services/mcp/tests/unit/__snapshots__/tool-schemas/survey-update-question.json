@@ -1,0 +1,45 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "base_version": {
+            "anyOf": [
+                {
+                    "type": "string"
+                },
+                {
+                    "type": "number"
+                }
+            ],
+            "description": "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
+        },
+        "dry_run": {
+            "description": "Apply and validate the change and show the diff, without writing.",
+            "type": "boolean"
+        },
+        "id": {
+            "description": "Survey id.",
+            "minLength": 1,
+            "type": "string"
+        },
+        "patch": {
+            "additionalProperties": {},
+            "description": "Merge patch (RFC 7396) on that one question, e.g. {\"question\":\"New text\"} or {\"choices\":[\"A\",\"B\"]}. null removes a key. The question id cannot change.",
+            "propertyNames": {
+                "type": "string"
+            },
+            "type": "object"
+        },
+        "question_id": {
+            "description": "The question's id from a survey read. Preferred over question_index.",
+            "type": "string"
+        },
+        "question_index": {
+            "description": "Position in questions, from 0.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+        }
+    },
+    "required": ["id", "patch"],
+    "type": "object"
+}

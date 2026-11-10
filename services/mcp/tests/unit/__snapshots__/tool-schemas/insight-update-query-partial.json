@@ -1,0 +1,97 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "base_version": {
+            "anyOf": [
+                {
+                    "type": "string"
+                },
+                {
+                    "type": "number"
+                }
+            ],
+            "description": "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
+        },
+        "description": {
+            "anyOf": [
+                {
+                    "maxLength": 400,
+                    "type": "string"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "description": "New description, written in the same update."
+        },
+        "dry_run": {
+            "description": "Apply and validate the change and show the diff, without writing.",
+            "type": "boolean"
+        },
+        "id": {
+            "anyOf": [
+                {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer"
+                },
+                {
+                    "minLength": 1,
+                    "type": "string"
+                }
+            ],
+            "description": "Insight id or short_id."
+        },
+        "json_patch": {
+            "description": "RFC 6902 operations on the insight's `query`, e.g. [{\"op\":\"replace\",\"path\":\"/source/series/1/event\",\"value\":\"signup\"}] or [{\"op\":\"add\",\"path\":\"/source/series/-\",\"value\":{\"kind\":\"EventsNode\",\"event\":\"purchase\"}}]. Add a `test` op to assert a value first. Use this to change one array element.",
+            "items": {
+                "description": "One JSON Patch operation.",
+                "properties": {
+                    "from": {
+                        "description": "Source JSON Pointer for `move` and `copy`.",
+                        "type": "string"
+                    },
+                    "op": {
+                        "description": "RFC 6902 operation. `test` checks that the value at `path` equals `value` and rejects the whole patch if not.",
+                        "enum": ["add", "remove", "replace", "move", "copy", "test"],
+                        "type": "string"
+                    },
+                    "path": {
+                        "description": "JSON Pointer (RFC 6901) into the target, e.g. `/source/series/1/event`. `-` appends to an array.",
+                        "type": "string"
+                    },
+                    "value": {
+                        "description": "The value for `add`, `replace` and `test`."
+                    }
+                },
+                "required": ["op", "path"],
+                "type": "object"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+        },
+        "merge_patch": {
+            "additionalProperties": {},
+            "description": "RFC 7396 merge patch on `query`, e.g. {\"source\":{\"dateRange\":{\"date_from\":\"-30d\"}}}. null removes a key. Arrays are replaced whole, so use json_patch for one element.",
+            "propertyNames": {
+                "type": "string"
+            },
+            "type": "object"
+        },
+        "name": {
+            "anyOf": [
+                {
+                    "maxLength": 400,
+                    "type": "string"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "description": "New name, written in the same version-checked update."
+        }
+    },
+    "required": ["id"],
+    "type": "object"
+}

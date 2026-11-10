@@ -948,5 +948,63 @@
             "openWorldHint": true,
             "readOnlyHint": false
         }
+    },
+    "insight-update-query-partial": {
+        "description": "Change part of a saved insight's query without resending all of it: a JSON Patch (`json_patch`, RFC 6902, e.g. replace /source/series/1/event or add /source/series/-) or a merge patch (`merge_patch`, RFC 7396, e.g. {\"source\":{\"dateRange\":{\"date_from\":\"-30d\"}}}). The patched query is validated with insight-create's query schema before anything is written. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten; insights have no API precondition, so nothing can detect that. Returns `changed: {path: [old, new]}` and the new `version` (updated_at). `name` and `description` can be set in the same update. `dry_run: true` shows the diff without writing. For tags or dashboards use insight-update or insights-batch-update.",
+        "category": "Product analytics",
+        "feature": "product_analytics",
+        "summary": "Patch part of an insight's query, version-checked against lost updates.",
+        "title": "Patch insight query",
+        "required_scopes": ["insight:write"],
+        "api_operations": [
+            "GET /api/projects/{project_id}/insights/",
+            "GET /api/projects/{project_id}/insights/{id}/",
+            "PATCH /api/projects/{project_id}/insights/{id}/"
+        ],
+        "search_keywords": ["json patch", "funnel step", "series", "partial update", "date range"],
+        "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
+    },
+    "feature-flag-update-conditions": {
+        "description": "Change one release condition or variant of a feature flag without resending the rest of `filters`. `conditions` ops: update (by condition_id from a flag read, or index) with `set` {rollout_percentage, variant, description, properties, aggregation_group_type_index}; add {condition, position?}; remove. `variants` ops: update by key {rollout_percentage, name}; add {key, rollout_percentage}; remove. Variant rollouts must add up to 100 after the change. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten. The flag's `version` is sent with the write, so the API itself refuses a stale write on flags that check it, and the receipt reports `concurrent_write_detected` when the version shows another write landed in that window. Returns `changed`, a short list of the conditions and variants, and the new `version`. `dry_run: true` shows the diff without writing.",
+        "category": "Feature flags",
+        "feature": "flags",
+        "summary": "Change one flag condition or variant, version-checked against lost updates.",
+        "title": "Update flag conditions",
+        "required_scopes": ["feature_flag:write"],
+        "api_operations": [
+            "GET /api/projects/{project_id}/feature_flags/{id}/",
+            "PATCH /api/projects/{project_id}/feature_flags/{id}/"
+        ],
+        "search_keywords": ["release condition", "variant", "rollout", "multivariate", "partial update"],
+        "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
+    },
+    "survey-update-question": {
+        "description": "Change one survey question without resending the others: a merge patch (RFC 7396) on the question with `question_id` (preferred) or `question_index`, e.g. {\"question\":\"New text\"}. The patched questions are validated with survey-update's schema before anything is written. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten; surveys expose no version marker, so the check compares the questions themselves, and the receipt's `version` is a hash of them. Returns `changed` and `version`. `dry_run: true` shows the diff without writing.",
+        "category": "Surveys",
+        "feature": "surveys",
+        "summary": "Change one survey question, version-checked against lost updates.",
+        "title": "Update survey question",
+        "required_scopes": ["survey:write"],
+        "api_operations": [
+            "GET /api/projects/{project_id}/surveys/{id}/",
+            "PATCH /api/projects/{project_id}/surveys/{id}/"
+        ],
+        "search_keywords": ["question text", "partial update", "survey question"],
+        "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
     }
 }

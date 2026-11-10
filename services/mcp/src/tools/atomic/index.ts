@@ -11,10 +11,18 @@ import type { ToolBase, ZodObjectAny } from '@/tools/types'
 import { annotationsBatchCreateTool, annotationsBatchDeleteTool } from './annotationsBatch'
 import dashboardCreateWithInsights from './dashboardCreateWithInsights'
 import insightsBatchUpdate from './insightsBatchUpdate'
+import {
+    featureFlagUpdateConditionsTool,
+    insightUpdateQueryPartialTool,
+    surveyUpdateQuestionTool,
+} from './partialUpdates'
 
 export const ATOMIC_TOOLS: Record<string, () => ToolBase<ZodObjectAny>> = {
     'insights-batch-update': insightsBatchUpdate,
     'annotations-batch-create': annotationsBatchCreateTool,
     'annotations-batch-delete': annotationsBatchDeleteTool,
     'dashboard-create-with-insights': dashboardCreateWithInsights,
+    'insight-update-query-partial': insightUpdateQueryPartialTool,
+    'feature-flag-update-conditions': featureFlagUpdateConditionsTool,
+    'survey-update-question': surveyUpdateQuestionTool,
 }

@@ -1,0 +1,168 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "base_version": {
+            "anyOf": [
+                {
+                    "type": "string"
+                },
+                {
+                    "type": "number"
+                }
+            ],
+            "description": "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
+        },
+        "conditions": {
+            "description": "Changes to release conditions, applied in order.",
+            "items": {
+                "additionalProperties": false,
+                "description": "One change to the release conditions.",
+                "properties": {
+                    "condition_id": {
+                        "description": "The condition_id a flag read returned. Preferred: it survives reordering.",
+                        "type": "string"
+                    },
+                    "index": {
+                        "description": "Position in filters.groups, from 0.",
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "op": {
+                        "description": "update and remove name a condition; add inserts `set` as a new one.",
+                        "enum": ["update", "add", "remove"],
+                        "type": "string"
+                    },
+                    "position": {
+                        "description": "add only: insert at this index; default is the end.",
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "set": {
+                        "additionalProperties": false,
+                        "description": "update: the fields to change, others stay. add: the new condition (properties default to [], rollout to 100).",
+                        "properties": {
+                            "aggregation_group_type_index": {
+                                "anyOf": [
+                                    {
+                                        "maximum": 9007199254740991,
+                                        "minimum": -9007199254740991,
+                                        "type": "integer"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "description": "Group type to aggregate on."
+                            },
+                            "description": {
+                                "anyOf": [
+                                    {
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "description": "Condition description."
+                            },
+                            "properties": {
+                                "description": "Replace the property filters of this condition (each with key, value, operator, type).",
+                                "items": {
+                                    "additionalProperties": {},
+                                    "propertyNames": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                },
+                                "type": "array"
+                            },
+                            "rollout_percentage": {
+                                "anyOf": [
+                                    {
+                                        "maximum": 100,
+                                        "minimum": 0,
+                                        "type": "number"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "description": "Rollout for this condition, 0-100."
+                            },
+                            "variant": {
+                                "anyOf": [
+                                    {
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "description": "Force this variant key for matching users; null clears it."
+                            }
+                        },
+                        "type": "object"
+                    }
+                },
+                "required": ["op"],
+                "type": "object"
+            },
+            "maxItems": 20,
+            "type": "array"
+        },
+        "dry_run": {
+            "description": "Apply and validate the change and show the diff, without writing.",
+            "type": "boolean"
+        },
+        "id": {
+            "description": "Feature flag id.",
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+        },
+        "variants": {
+            "description": "Changes to multivariate variants, applied in order. Rollouts must add up to 100 afterwards.",
+            "items": {
+                "additionalProperties": false,
+                "description": "One change to the multivariate variants.",
+                "properties": {
+                    "key": {
+                        "description": "Variant key.",
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Variant description."
+                    },
+                    "op": {
+                        "description": "What to do with the variant named by key.",
+                        "enum": ["update", "add", "remove"],
+                        "type": "string"
+                    },
+                    "rollout_percentage": {
+                        "description": "Share of users, 0-100. Required for add.",
+                        "maximum": 100,
+                        "minimum": 0,
+                        "type": "number"
+                    }
+                },
+                "required": ["op", "key"],
+                "type": "object"
+            },
+            "maxItems": 20,
+            "type": "array"
+        }
+    },
+    "required": ["id"],
+    "type": "object"
+}
