@@ -10,9 +10,14 @@ const SERVER_MINT_ONLY_SCOPE_OBJECTS = new Set([
     'signal_scratchpad_internal',
 ])
 
+/** A scope only the server mints. No reauthorization or key edit lets a user hold it. */
+export const isServerMintOnlyScope = (scope: string): boolean => {
+    const scopeObject = scope.split(':', 1)[0]
+    return scopeObject !== undefined && SERVER_MINT_ONLY_SCOPE_OBJECTS.has(scopeObject)
+}
+
 const holdsScope = (scopes: string[], requiredScope: string): boolean => {
-    const scopeObject = requiredScope.split(':', 1)[0]
-    const isServerMintOnly = scopeObject !== undefined && SERVER_MINT_ONLY_SCOPE_OBJECTS.has(scopeObject)
+    const isServerMintOnly = isServerMintOnlyScope(requiredScope)
 
     // A user-consented `*` must never reach a server-minted scope object. Only the wildcard is
     // withheld — the read/write rule below still applies, so this stays in step with the Django

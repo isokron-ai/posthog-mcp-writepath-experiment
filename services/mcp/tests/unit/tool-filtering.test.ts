@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { hasScope } from '@/lib/api'
+import { hasScope, isServerMintOnlyScope } from '@/lib/api'
 import { OAUTH_SCOPES_HIDDEN, OAUTH_SCOPES_SUPPORTED } from '@/lib/constants'
 import type { EvaluatedFlags } from '@/lib/posthog/flags'
 import { SessionManager } from '@/lib/SessionManager'
@@ -10,6 +10,7 @@ import {
     getFlagGatedTools,
     getToolDefinitions,
     getRequiredFeatureFlags,
+    getScopeGatedTools,
     getToolsForFeatures,
     type ToolDefinition,
     toolPassesEntitlementGate,
@@ -695,6 +696,27 @@ describe('server-minted scope matching', () => {
         expect(hasScope(['*'], 'insight:write')).toBe(true)
         expect(hasScope(['insight:write'], 'insight:read')).toBe(true)
         expect(hasScope(['insight:read'], 'insight:write')).toBe(false)
+    })
+})
+
+describe('getScopeGatedTools', () => {
+    // The search hint built from this list says to reauthorize or add the scope to the key.
+    // A user can do neither for a server-minted scope, not even with a full-access key.
+    it.each([{ scopes: ['*'] }, { scopes: ['insight:read'] }])(
+        'never lists a tool whose missing scope only the server can mint: $scopes',
+        ({ scopes }) => {
+            const serverMinted = getScopeGatedTools(scopes).filter((tool) =>
+                tool.missingScopes.some(isServerMintOnlyScope)
+            )
+
+            expect(serverMinted.map((tool) => tool.name)).toEqual([])
+        }
+    )
+
+    it('still lists a tool the caller could unlock by adding a scope', () => {
+        const gated = getScopeGatedTools(['insight:read'])
+
+        expect(gated.find((tool) => tool.name === 'dashboard-create')?.missingScopes).toEqual(['dashboard:write'])
     })
 })
 

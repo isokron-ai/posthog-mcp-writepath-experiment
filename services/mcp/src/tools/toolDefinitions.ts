@@ -1,6 +1,6 @@
 import z from 'zod'
 
-import { hasScope, hasScopes } from '@/lib/api'
+import { hasScope, hasScopes, isServerMintOnlyScope } from '@/lib/api'
 import { OAUTH_SCOPES_SUPPORTED } from '@/lib/oauth-scopes.generated'
 import type { EvaluatedFlags } from '@/lib/posthog/flags'
 import { isStaffOnlyTool } from '@/lib/staff-only-tools'
@@ -424,12 +424,18 @@ export function getScopeGatedTools(scopes: string[], options?: ToolFilterOptions
         if (isStaffOnlyTool(required)) {
             continue
         }
+        const missingScopes = required.filter((scope) => !hasScope(scopes, scope))
+        // The hint tells the caller to reauthorize or edit their key. Neither can add a
+        // server-minted scope, so for these tools the advice could never work.
+        if (missingScopes.some(isServerMintOnlyScope)) {
+            continue
+        }
         gated.push({
             name,
             title: definition.title,
             description: definition.description,
             searchKeywords: definition.search_keywords,
-            missingScopes: required.filter((scope) => !hasScope(scopes, scope)),
+            missingScopes,
             requiredScopes: required,
         })
     }
