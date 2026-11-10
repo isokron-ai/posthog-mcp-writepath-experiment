@@ -1,5 +1,7 @@
 /** Token-aware schema summarization and drill-down utilities for the exec tool. */
 
+import { z } from 'zod'
+
 // 12k tokens × 4 chars/token
 export const TOKEN_CHAR_LIMIT = 4 * 12_000
 
@@ -450,7 +452,8 @@ function summarizeNode(
  * is never an empty `{ type, properties: {} }`.
  */
 export function summarizeSchema(schema: JSONSchema, toolName: string, fieldPath?: string): NodeSummary {
-    return summarizeNode(schema, toolName, fieldPath, 0)
+    // A summarized field keeps its `enum`, so a DRF choice list in its description only repeats it.
+    return mapSchema(summarizeNode(schema, toolName, fieldPath, 0), stripChoiceLines) as NodeSummary
 }
 
 /**
@@ -619,4 +622,398 @@ export function listAvailablePaths(schema: JSONSchema): string[] {
     }
 
     return paths
+}
+
+// ------------------------------------------------------------------
+// Schema de-duplication for `info` and `schema <tool> <path>` output
+// ------------------------------------------------------------------
+
+/** A DRF choice line, `* \`value\` - Label`, which serializers append to an enum field's description. */
+const CHOICE_LINE = /^\s*\* `([^`]*)` - (.*)$/
+
+const normalizeChoiceLabel = (text: string): string =>
+    text
+        .replace(/[\s_-]+/g, ' ')
+        .trim()
+        .toLowerCase()
+
+function enumValuesOf(node: JSONSchema): Set<string> | undefined {
+    const values = new Set<string>()
+    const collect = (candidate: unknown): void => {
+        if (candidate && typeof candidate === 'object' && Array.isArray((candidate as JSONSchema).enum)) {
+            for (const value of (candidate as JSONSchema).enum as unknown[]) {
+                values.add(String(value))
+            }
+        }
+    }
+    collect(node)
+    collect(node.items)
+    for (const key of ['anyOf', 'oneOf'] as const) {
+        for (const variant of getVariants(node, key) ?? []) {
+            collect(variant)
+            collect(variant.items)
+        }
+    }
+    return values.size > 0 ? values : undefined
+}
+
+/**
+ * Removes DRF choice lines that only repeat an enum on the same node: a line goes when its value is
+ * one of the node's enum values and its label is that value again. A line whose label says more
+ * (`distinct_id` - "User ID (default)") stays. On the friction session these lists were 6,059 tokens
+ * of info and schema output, and 625 of 628 lines repeated the value.
+ */
+function stripChoiceLines(node: JSONSchema): JSONSchema {
+    if (typeof node.description !== 'string' || !node.description.includes('* `')) {
+        return node
+    }
+    const values = enumValuesOf(node)
+    if (!values) {
+        return node
+    }
+    const kept = node.description.split('\n').filter((line) => {
+        const match = CHOICE_LINE.exec(line)
+        return !(match && values.has(match[1]!) && normalizeChoiceLabel(match[1]!) === normalizeChoiceLabel(match[2]!))
+    })
+    const description = kept.join('\n').trim()
+    const { description: _dropped, ...rest } = node
+    return description ? { ...rest, description } : rest
+}
+
+function mapSchema(node: unknown, visit: (node: JSONSchema) => JSONSchema): unknown {
+    if (Array.isArray(node)) {
+        return node.map((item) => mapSchema(item, visit))
+    }
+    if (node === null || typeof node !== 'object') {
+        return node
+    }
+    const mapped: JSONSchema = {}
+    for (const [key, value] of Object.entries(node as JSONSchema)) {
+        mapped[key] = mapSchema(value, visit)
+    }
+    return visit(mapped)
+}
+
+/** Stable JSON for structural comparison: object keys sorted, so key order never splits two equal schemas. */
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalJson).join(',')}]`
+    }
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value) ?? 'null'
+    }
+    const entries = Object.keys(value as JSONSchema)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as JSONSchema)[key])}`)
+    return `{${entries.join(',')}}`
+}
+
+/** Keys whose values are maps of name → schema, so a child's key there names it. */
+const SCHEMA_MAP_KEYS = new Set(['properties', '$defs', 'definitions', 'patternProperties'])
+/** Keys whose values hold sub-schemas, directly or as an array. */
+const SUBSCHEMA_KEYS = new Set(['items', 'additionalProperties', 'anyOf', 'oneOf', 'allOf', 'not', 'prefixItems'])
+
+/** A repeated sub-schema must be at least this big (serialized) for a `$ref` to save anything. */
+const MIN_DEF_CHARS = 160
+
+interface DefCandidate {
+    key: string
+    node: JSONSchema
+    name: string
+    count: number
+    size: number
+}
+
+function withoutDescription(node: JSONSchema): JSONSchema {
+    const { description: _description, ...rest } = node
+    return rest
+}
+
+function suggestDefName(node: JSONSchema, hint: string | undefined): string {
+    const fromTitle = typeof node.title === 'string' ? node.title : undefined
+    const fromKind = variantName(node)
+    const raw = fromTitle ?? fromKind ?? hint ?? 'Schema'
+    const cleaned = raw.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
+    return cleaned || 'Schema'
+}
+
+/** Walk every sub-schema below the root, with the property or definition name it sits under. */
+function forEachSubschema(
+    node: unknown,
+    visit: (node: JSONSchema, hint: string | undefined) => void,
+    hint?: string,
+    isRoot = true
+): void {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+        return
+    }
+    const record = node as JSONSchema
+    if (!isRoot) {
+        visit(record, hint)
+    }
+    for (const [key, value] of Object.entries(record)) {
+        if (SCHEMA_MAP_KEYS.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+            for (const [childName, child] of Object.entries(value as JSONSchema)) {
+                forEachSubschema(child, visit, childName, false)
+            }
+        } else if (SUBSCHEMA_KEYS.has(key)) {
+            const children = Array.isArray(value) ? value : [value]
+            for (const child of children) {
+                forEachSubschema(child, visit, hint, false)
+            }
+        }
+    }
+}
+
+function findBestCandidate(root: JSONSchema): DefCandidate | undefined {
+    const seen = new Map<string, DefCandidate>()
+    forEachSubschema(root, (node, hint) => {
+        if (typeof node.$ref === 'string') {
+            return
+        }
+        const key = canonicalJson(withoutDescription(node))
+        if (key.length < MIN_DEF_CHARS) {
+            return
+        }
+        const existing = seen.get(key)
+        if (existing) {
+            existing.count += 1
+        } else {
+            seen.set(key, { key, node, name: suggestDefName(node, hint), count: 1, size: key.length })
+        }
+    })
+    let best: DefCandidate | undefined
+    for (const candidate of seen.values()) {
+        if (candidate.count < 2) {
+            continue
+        }
+        const saving = (candidate.count - 1) * candidate.size
+        if (!best || saving > (best.count - 1) * best.size) {
+            best = candidate
+        }
+    }
+    return best
+}
+
+function replaceMatches(node: unknown, key: string, ref: string, descriptions: (string | undefined)[]): unknown {
+    if (Array.isArray(node)) {
+        return node.map((item) => replaceMatches(item, key, ref, descriptions))
+    }
+    if (node === null || typeof node !== 'object') {
+        return node
+    }
+    const record = node as JSONSchema
+    const result: JSONSchema = {}
+    for (const [childKey, value] of Object.entries(record)) {
+        if (SCHEMA_MAP_KEYS.has(childKey) && value && typeof value === 'object' && !Array.isArray(value)) {
+            const mapped: JSONSchema = {}
+            for (const [name, child] of Object.entries(value as JSONSchema)) {
+                mapped[name] = replaceNode(child, key, ref, descriptions)
+            }
+            result[childKey] = mapped
+        } else if (SUBSCHEMA_KEYS.has(childKey)) {
+            result[childKey] = Array.isArray(value)
+                ? value.map((child) => replaceNode(child, key, ref, descriptions))
+                : replaceNode(value, key, ref, descriptions)
+        } else {
+            result[childKey] = value
+        }
+    }
+    return result
+}
+
+function replaceNode(node: unknown, key: string, ref: string, descriptions: (string | undefined)[]): unknown {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+        return node
+    }
+    const record = node as JSONSchema
+    if (typeof record.$ref !== 'string' && canonicalJson(withoutDescription(record)) === key) {
+        const description = typeof record.description === 'string' ? record.description : undefined
+        descriptions.push(description)
+        return description === undefined ? { $ref: ref } : { $ref: ref, description }
+    }
+    return replaceMatches(record, key, ref, descriptions)
+}
+
+/**
+ * Moves every sub-schema that appears more than once in one response into `$defs` and points each
+ * copy at it with `$ref`. Copies can differ in `description` only; a description every copy shares
+ * moves into the definition. Largest saving first, so a repeated property filter inside a repeated
+ * series item becomes one definition referenced from another.
+ */
+export function extractRepeatedDefinitions(schema: JSONSchema): JSONSchema {
+    let root: JSONSchema = { ...schema }
+    const defs: JSONSchema = { ...(root.$defs as JSONSchema | undefined) }
+    const usedNames = new Set(Object.keys(defs))
+    for (let round = 0; round < 200; round++) {
+        const best = findBestCandidate({ ...root, $defs: defs })
+        if (!best) {
+            break
+        }
+        let name = best.name
+        for (let suffix = 2; usedNames.has(name); suffix++) {
+            name = `${best.name}_${suffix}`
+        }
+        usedNames.add(name)
+        const ref = `#/$defs/${name}`
+        const descriptions: (string | undefined)[] = []
+        const replaced = replaceMatches({ ...root, $defs: defs }, best.key, ref, descriptions) as JSONSchema
+        const { $defs: replacedDefs, ...rest } = replaced
+        root = rest
+        Object.assign(defs, replacedDefs as JSONSchema)
+        const shared = descriptions.every((description) => description === descriptions[0])
+            ? descriptions[0]
+            : undefined
+        defs[name] =
+            shared === undefined
+                ? withoutDescription(best.node)
+                : { ...withoutDescription(best.node), description: shared }
+        if (shared !== undefined) {
+            root = mapSchema(root, (node) =>
+                node.$ref === ref && node.description === shared ? { $ref: ref } : node
+            ) as JSONSchema
+            for (const [defName, def] of Object.entries(defs)) {
+                if (defName !== name) {
+                    defs[defName] = mapSchema(def, (node) =>
+                        node.$ref === ref && node.description === shared ? { $ref: ref } : node
+                    )
+                }
+            }
+        }
+    }
+    return Object.keys(defs).length > 0 ? { ...root, $defs: defs } : root
+}
+
+/** Choice-list stripping plus `$defs` extraction: what `info` and `schema <tool> <path>` print. */
+export function compactSchema(schema: JSONSchema): JSONSchema {
+    return extractRepeatedDefinitions(mapSchema(schema, stripChoiceLines) as JSONSchema)
+}
+
+/** The tool names whose input an update tool most likely repeats, most specific first. */
+export function createToolCandidates(toolName: string): string[] {
+    const candidates: string[] = []
+    const add = (name: string): void => {
+        if (name !== toolName && !candidates.includes(name)) {
+            candidates.push(name)
+        }
+    }
+    // `annotations-partial-update` pairs with `annotation-create`.
+    const singularFirst = (name: string): string => name.replace(/^([a-z]+?)s(?=-|$)/, '$1')
+    const base = /-partial-update$/.test(toolName)
+        ? toolName.replace(/-partial-update$/, '')
+        : /-update$/.test(toolName)
+          ? toolName.replace(/-update$/, '')
+          : undefined
+    if (base !== undefined) {
+        add(`${base}-create`)
+        add(`${singularFirst(base)}-create`)
+    }
+    if (/^update-/.test(toolName)) {
+        add(toolName.replace(/^update-/, 'create-'))
+    }
+    return candidates
+}
+
+function isPlainSchema(value: unknown): value is JSONSchema {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Session key `info` records once it has printed a tool's whole input schema. */
+export const infoShownKey = (toolName: string): string => `info:${toolName}`
+
+interface InfoSchemaContext {
+    stateManager?: {
+        wasShown?: (key: string) => Promise<boolean>
+        markShownOnce?: (key: string) => Promise<boolean>
+    }
+}
+
+interface SiblingTool {
+    name: string
+    schema: unknown
+    rawInputSchema?: Record<string, unknown> | undefined
+}
+
+/** A tool's input schema as `info` prints it: the advertised JSON Schema without `output_format`. */
+function infoJsonSchema(tool: SiblingTool): JSONSchema | undefined {
+    if (tool.rawInputSchema) {
+        return tool.rawInputSchema
+    }
+    try {
+        const converted = z.toJSONSchema(tool.schema as z.ZodType, { io: 'input' }) as JSONSchema
+        const { output_format: _omitted, ...properties } = (converted.properties ?? {}) as JSONSchema
+        return { ...converted, properties }
+    } catch {
+        return undefined
+    }
+}
+
+/** Records that `info` printed this tool's whole input schema, so a later update tool can point at it. */
+export async function recordInfoShown(context: InfoSchemaContext | undefined, toolName: string): Promise<void> {
+    await context?.stateManager?.markShownOnce?.(infoShownKey(toolName))
+}
+
+/**
+ * The schema `info <tool>` prints: `compactSchema`, plus, for an update tool whose create tool's
+ * `info` was already printed in full in this session, a pointer in place of each top-level property
+ * that is identical in both (`insight-update`'s `query` is `insight-create`'s). Without that earlier
+ * `info`, or without a session, every property is printed.
+ */
+export async function compactInfoSchema(
+    schema: JSONSchema,
+    toolName: string,
+    options: {
+        context?: InfoSchemaContext | undefined
+        tools?: () => Promise<readonly SiblingTool[]>
+    } = {}
+): Promise<JSONSchema> {
+    let result = schema
+    const stateManager = options.context?.stateManager
+    const candidates = createToolCandidates(toolName)
+    if (stateManager?.wasShown && options.tools && candidates.length > 0) {
+        const tools = await options.tools()
+        for (const candidate of candidates) {
+            const sibling = tools.find((tool) => tool.name === candidate)
+            if (!sibling) {
+                continue
+            }
+            if (!(await stateManager.wasShown(infoShownKey(candidate)))) {
+                break
+            }
+            const siblingProperties = (infoJsonSchema(sibling)?.properties ?? {}) as Record<string, unknown>
+            const properties = { ...((schema.properties ?? {}) as Record<string, unknown>) }
+            let pointed = false
+            for (const [name, property] of Object.entries(properties)) {
+                const other = siblingProperties[name]
+                if (!isPlainSchema(property) || !isPlainSchema(other)) {
+                    continue
+                }
+                // The update tool's own wording for the field survives; only the schema is shared.
+                const ownDescription = typeof property.description === 'string' ? property.description : undefined
+                const sameDescription = ownDescription === other.description
+                const where = `schema as \`${name}\` on ${candidate}, whose info was shown earlier in this session. Run \`schema ${candidate} ${name}\` to see it again.`
+                const pointer = {
+                    $ref: `${candidate}#/properties/${name}`,
+                    description:
+                        sameDescription || ownDescription === undefined
+                            ? `Same ${where}`
+                            : `${ownDescription} Otherwise the same ${where}`,
+                }
+                const key = canonicalJson(withoutDescription(property))
+                // Point only where the pointer is clearly smaller than the property it replaces.
+                if (
+                    key === canonicalJson(withoutDescription(other)) &&
+                    canonicalJson(property).length > 2 * JSON.stringify(pointer).length
+                ) {
+                    properties[name] = pointer
+                    pointed = true
+                }
+            }
+            if (pointed) {
+                result = { ...schema, properties }
+            }
+            break
+        }
+    }
+    return compactSchema(result)
 }

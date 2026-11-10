@@ -26,7 +26,15 @@ import { APP_DATA_META_KEY } from '@/ui-apps/types'
 
 import { readParamAliases } from './cast-helpers'
 import { type ExecLearnCatalog, QUALIFIED_IDENTIFIER, tokenizeLearnInput } from './exec-learn'
-import { TOKEN_CHAR_LIMIT, listAvailablePaths, resolveSchemaPath, summarizeSchema } from './schema-utils'
+import {
+    TOKEN_CHAR_LIMIT,
+    compactInfoSchema,
+    compactSchema,
+    listAvailablePaths,
+    recordInfoShown,
+    resolveSchemaPath,
+    summarizeSchema,
+} from './schema-utils'
 import { type BuiltInSkillHint, formatSkillLookupMiss, type SkillLookupMissKind } from './skills/notFound'
 import { isRegexPattern, searchToolsRanked, searchToolsRegex } from './tool-search'
 import { getToolDefinitions, type FlagGatedTool, type ScopeGatedTool } from './toolDefinitions'
@@ -2088,7 +2096,13 @@ export function createExecTool(
                     const fullOutput = serialize(topShape, fullSchema)
 
                     if (fullOutput.length <= TOKEN_CHAR_LIMIT) {
-                        return fullOutput
+                        // Same choice of full schema or summary as before; the full one is printed compacted.
+                        const compacted = await compactInfoSchema(fullSchema as Record<string, unknown>, tool.name, {
+                            context,
+                            tools: resolveTools,
+                        })
+                        await recordInfoShown(context, tool.name)
+                        return serialize(topShape, compacted)
                     }
 
                     // Schema too large — return summary with drill-down hints.
@@ -2142,7 +2156,7 @@ export function createExecTool(
                         schema: resolved,
                     })
                     if (serialized.length <= TOKEN_CHAR_LIMIT) {
-                        return serialized
+                        return JSON.stringify({ field: fieldPath, schema: compactSchema(resolved) })
                     }
 
                     // Field schema too large — return a summary instead. The
