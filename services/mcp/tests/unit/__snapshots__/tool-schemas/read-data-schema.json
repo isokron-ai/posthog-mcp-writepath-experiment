@@ -7,6 +7,10 @@
                 {
                     "additionalProperties": false,
                     "properties": {
+                        "include_unseen": {
+                            "description": "Also list events that are defined but were not seen in the last 30 days. By default they are left out and only counted.",
+                            "type": "boolean"
+                        },
                         "kind": {
                             "const": "events",
                             "type": "string"
