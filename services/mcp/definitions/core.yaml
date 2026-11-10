@@ -434,3 +434,39 @@ tools:
         param_overrides:
             uuid:
                 description: User UUID, or `@me` to target the authenticated user.
+        response:
+            include:
+                - id
+                - uuid
+                - distinct_id
+                - email
+                - pending_email
+                - is_email_verified
+                - first_name
+                - last_name
+                - date_joined
+                - is_staff
+                - has_password
+                - is_2fa_enabled
+                - has_social_auth
+                - has_sso_enforcement
+                - passkeys_enabled_for_2fa
+                - allow_impersonation
+                - notification_settings
+                - anonymize_data
+                - toolbar_mode
+                - events_column_config
+                - theme_mode
+                - hedgehog_config
+                - allow_sidebar_suggestions
+                - shortcut_position
+                - role_at_organization
+                - hide_mcp_hints
+                - scene_personalisation
+                - pending_invites
+                - organization.id
+                - organization.name
+                - team.id
+                - team.name
+                - organizations.*.id
+                - organizations.*.name
