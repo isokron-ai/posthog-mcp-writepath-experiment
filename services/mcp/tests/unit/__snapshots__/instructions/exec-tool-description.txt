@@ -43,6 +43,8 @@ posthog:exec({ "command": "call --json <tool_name> <json_input>" })
 - Oversized sub-schemas are also summarized with a `note` to drill further.
 - Unknown paths return an error listing available child paths.
 
+**Batching:** read-only commands (`help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`) can share one request, one command per line; each result comes back labelled. A write always goes in its own request.
+
 **Not supported:**
 
 - `search` matches tool metadata only, not input schemas.

@@ -11,6 +11,7 @@ import {
     ExecCommandError,
     type ExecCommandErrorReason,
     findRecoverableApiError,
+    handleToolError,
     PostHogApiError,
     ToolInputValidationError,
 } from '@/lib/errors'
@@ -434,6 +435,114 @@ function splitBatchedCommands(command: string): string[] | undefined {
     return commands
 }
 
+/** Verbs that only read, and so may share one request with others. `call` joins them
+ *  only for a tool annotated read-only. `learn` stays one per request, like a write. */
+const READ_ONLY_EXEC_VERBS = new Set(['help', 'tools', 'search', 'info', 'schema'])
+
+/** Bound on one batch, so a request cannot fan out into an unbounded run of calls. */
+export const MAX_BATCH_COMMANDS = 10
+
+interface ReadOnlyBatchDeps {
+    findTool: (name: string) => Promise<Tool<ZodObjectAny>>
+    runCommand: (command: string) => Promise<unknown>
+    trackCommand?: ExecCommandTracker | undefined
+}
+
+/** Why a command cannot run inside a batch, or undefined when it can. Throws nothing:
+ *  a `call` to an unknown tool is left to fail on its own line. */
+async function batchRefusal(
+    command: string,
+    findBatchTool: (name: string) => Promise<Tool<ZodObjectAny>>
+): Promise<string | undefined> {
+    const { verb, rest } = parseCommand(command)
+    if (READ_ONLY_EXEC_VERBS.has(verb)) {
+        return undefined
+    }
+    if (verb !== 'call') {
+        return KNOWN_EXEC_VERBS.has(verb) ? `"${verb}" runs one per request` : undefined
+    }
+    const toolName = parseCommand(parseCallFlags(rest).rest).verb
+    if (!toolName) {
+        return undefined
+    }
+    let tool: Tool<ZodObjectAny>
+    try {
+        tool = await findBatchTool(toolName)
+    } catch {
+        return undefined
+    }
+    return tool.annotations?.readOnlyHint === true ? undefined : `"${tool.name}" is not a read-only tool`
+}
+
+/** The text of one command's result, for a labelled batch entry. */
+function batchEntryText(result: unknown): string {
+    if (typeof result === 'string') {
+        return result
+    }
+    if (isRecord(result) && Array.isArray(result['content'])) {
+        return (result['content'] as unknown[])
+            .map((item) => (isRecord(item) && typeof item['text'] === 'string' ? item['text'] : ''))
+            .filter(Boolean)
+            .join('\n')
+    }
+    return JSON.stringify(result)
+}
+
+function oneLine(command: string): string {
+    const flattened = command.replace(/\s+/g, ' ')
+    return flattened.length > MAX_LISTED_BATCH_COMMAND_LENGTH
+        ? `${flattened.slice(0, MAX_LISTED_BATCH_COMMAND_LENGTH)}...`
+        : flattened
+}
+
+/**
+ * Runs several read-only commands from one request (`info a` / `schema b c` / `call
+ * <read-only tool> {...}` on separate lines) and returns each result under its own
+ * label. Discovery is most of an agent's calls before a write, and each one otherwise
+ * costs a request.
+ *
+ * Writes stay one per request, so each is seen and confirmed on its own: a batch that
+ * holds a `call` to a tool not annotated read-only, or a `learn`, is refused whole and
+ * nothing in it runs. Commands run in order; one failing does not stop the rest, and
+ * its error is returned in its place.
+ */
+async function runReadOnlyBatch(commands: string[], deps: ReadOnlyBatchDeps): Promise<string> {
+    deps.trackCommand?.({ exec_verb: 'batch' })
+    if (commands.length > MAX_BATCH_COMMANDS) {
+        throw new ExecCommandError(batchedCommandMessage(commands), 'batched_command')
+    }
+    const refusals: string[] = []
+    for (const command of commands) {
+        const refusal = await batchRefusal(command, deps.findTool)
+        if (refusal) {
+            refusals.push(`- ${oneLine(command)}: ${refusal}`)
+        }
+    }
+    if (refusals.length > 0) {
+        throw new ExecCommandError(
+            [
+                `This request held ${commands.length} commands, and exec batches read-only commands only. Nothing ran.`,
+                'Send each of these as its own exec call, so a write is seen and confirmed on its own:',
+                ...refusals,
+                'Batchable: help, tools, search, info, schema, and call on a tool whose info shows readOnlyHint: true, one per line.',
+            ].join('\n'),
+            'batched_command'
+        )
+    }
+    const entries: string[] = []
+    for (const [index, command] of commands.entries()) {
+        let text: string
+        try {
+            text = batchEntryText(await deps.runCommand(command))
+        } catch (error) {
+            const tool = parseExecCallInnerToolName(command) ?? 'exec'
+            text = batchEntryText(handleToolError(error, tool))
+        }
+        entries.push(`### [${index + 1}/${commands.length}] ${oneLine(command)}\n${text}`)
+    }
+    return entries.join('\n\n')
+}
+
 /** Drops "load the <name> skill" steps from a result's `_agentNote` in place, so the
  *  result's lazily formatted text (`withInformationalResponse`) sees the change. */
 function stripSkillInstructionsFromAgentNote(result: unknown): void {
@@ -463,8 +572,8 @@ function batchedCommandMessage(commands: string[]): string {
         lines.push(`- ...and ${more} more`)
     }
     return [
-        `exec runs one command per request, and this request held ${commands.length}.`,
-        'Send each one as its own exec call. You can issue them in parallel. Commands found:',
+        `This request held ${commands.length} commands, and a batch holds at most ${MAX_BATCH_COMMANDS}. Nothing ran.`,
+        'Split them across several exec calls. You can issue them in parallel. Commands found:',
         ...lines,
     ].join('\n')
 }
@@ -1862,18 +1971,18 @@ export function createExecTool(
         schema: ExecSchema,
         scopes: [],
         annotations: { ...EXEC_TOOL_ANNOTATIONS },
-        handler: async (_context: Context, params: z.infer<ExecSchema>) => {
+        handler: async function execHandler(
+            _context: Context,
+            params: z.infer<ExecSchema>,
+            /** Set (to exactly `true`) for each command of a batch, whose results come back
+             *  as text, never as a UI-app payload. Callers outside this file pass two arguments. */
+            batchEntry?: unknown
+        ): Promise<unknown> {
+            const textOnly = batchEntry === true
             const { verb, rest } = parseCommand(params.command)
             // Reported up front so a command that throws (unknown tool, bad regex) still
             // records what was attempted — those are the failures worth counting.
             options.trackCommand?.({ exec_verb: verb })
-
-            // Without this the trailing commands ride along as part of the first one's
-            // argument and come back as an unknown tool name, which explains nothing.
-            const batched = splitBatchedCommands(params.command)
-            if (batched) {
-                throw new ExecCommandError(batchedCommandMessage(batched), 'batched_command')
-            }
 
             let gatewayTools: Tool<ZodObjectAny>[] | undefined
             const withheldGatewayToolNames = new Set<string>()
@@ -1909,6 +2018,27 @@ export function createExecTool(
                 options.heldTools !== undefined &&
                 !options.heldTools.has(name) &&
                 (getToolDefinitions()[name] !== undefined || withheldGatewayToolNames.has(name))
+
+            // Several read-only commands may share a request; anything else in a batch is
+            // refused before it runs. Without the split the trailing commands would ride along
+            // as part of the first one's argument and come back as an unknown tool name.
+            const batched = textOnly ? undefined : splitBatchedCommands(params.command)
+            if (batched) {
+                return runReadOnlyBatch(batched, {
+                    findTool: async (name) =>
+                        findTool(
+                            await resolveTools(),
+                            scopeGatedTools,
+                            flagGatedTools,
+                            name,
+                            context,
+                            isNotGranted,
+                            options.oauthClientId
+                        ),
+                    runCommand: (command) => execHandler(_context, { command }, true),
+                    trackCommand: options.trackCommand,
+                })
+            }
 
             switch (verb) {
                 case 'help':
@@ -2373,7 +2503,7 @@ export function createExecTool(
                             output: outputText,
                             ...resultShape,
                         })
-                        if (!includeAppData) {
+                        if (!includeAppData || textOnly) {
                             return outputText
                         }
                         // The model still reads only the wrapped text this branch protects, so a
@@ -2387,7 +2517,7 @@ export function createExecTool(
                         })
                     }
                     const isInlineUiAppHost = isPostHogCodeConsumer(mcpConsumer) || options.isInlineExecUiHost === true
-                    if (includeAppData || (tool._meta?.ui?.resourceUri && isInlineUiAppHost)) {
+                    if (!textOnly && (includeAppData || (tool._meta?.ui?.resourceUri && isInlineUiAppHost))) {
                         const isStringResult = typeof result === 'string'
                         const distinctId =
                             !isStringResult && tool._meta?.ui?.resourceUri ? await context.getDistinctId() : undefined

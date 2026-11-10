@@ -24,6 +24,7 @@ import {
     type ExecInnerCallProperties,
     type ExecToolOptions,
     formatInputValidationError,
+    MAX_BATCH_COMMANDS,
     rewrapFlattenedArguments,
     parseExecCallInnerToolName,
 } from '@/tools/exec'
@@ -1464,13 +1465,81 @@ describe('exec tool', () => {
     })
 
     describe('batched commands', () => {
-        it.each([
-            ['info mock-tool\ninfo other-tool', 2],
-            ['search flags\ncall mock-tool {}\ninfo mock-tool', 3],
-        ])('rejects %j and names each command', async (command, expected) => {
+        const writeTool = (handler = vi.fn(async () => ({ ok: true }))): Tool<ZodObjectAny> =>
+            makeMockTool({
+                name: 'write-tool',
+                annotations: {
+                    destructiveHint: false,
+                    idempotentHint: false,
+                    openWorldHint: false,
+                    readOnlyHint: false,
+                },
+                handler,
+            })
+
+        it('runs several read-only commands and labels each result', async () => {
+            const exec = createExec([makeMockTool(), writeTool()])
+            const result = (await exec.handler(mockContext, {
+                command: 'search mock\ninfo mock-tool\ncall mock-tool {}',
+            })) as string
+            expect(result).toMatch(/^### \[1\/3\] search mock\n/)
+            expect(result).toContain('### [2/3] info mock-tool\nname: mock-tool')
+            expect(result).toContain('### [3/3] call mock-tool {}\nid: 1')
+        })
+
+        it('returns a failing command as an error in its place and still runs the rest', async () => {
             const exec = createExec()
+            const result = (await exec.handler(mockContext, { command: 'info other-tool\ninfo mock-tool' })) as string
+            expect(result).toContain('### [1/2] info other-tool\nError: [exec]: Unknown tool: "other-tool"')
+            expect(result).toContain('### [2/2] info mock-tool\nname: mock-tool')
+        })
+
+        it('refuses the whole batch when it holds a call to a tool that is not read-only, and runs nothing', async () => {
+            const readHandler = vi.fn(async () => ({ ok: true }))
+            const writeHandler = vi.fn(async () => ({ ok: true }))
+            const exec = createExec([makeMockTool({ handler: readHandler }), writeTool(writeHandler)])
+            await expect(
+                exec.handler(mockContext, { command: 'call mock-tool {}\ncall write-tool {"a": 1}' })
+            ).rejects.toThrow(
+                /exec batches read-only commands only\. Nothing ran\.[\s\S]*"write-tool" is not a read-only tool/
+            )
+            expect(readHandler).not.toHaveBeenCalled()
+            expect(writeHandler).not.toHaveBeenCalled()
+        })
+
+        it('refuses a write reached through an alias as well', async () => {
+            const writeHandler = vi.fn(async () => ({ ok: true }))
+            const exec = createExec([
+                makeMockTool(),
+                makeMockTool({
+                    name: 'create-widget',
+                    annotations: {
+                        destructiveHint: false,
+                        idempotentHint: false,
+                        openWorldHint: false,
+                        readOnlyHint: false,
+                    },
+                    handler: writeHandler,
+                }),
+            ])
+            await expect(
+                exec.handler(mockContext, { command: 'info mock-tool\ncall widget-create {}' })
+            ).rejects.toThrow(/"create-widget" is not a read-only tool/)
+            expect(writeHandler).not.toHaveBeenCalled()
+        })
+
+        it('keeps learn out of a batch', async () => {
+            const exec = createExec()
+            await expect(exec.handler(mockContext, { command: 'info mock-tool\nlearn analytics' })).rejects.toThrow(
+                /"learn" runs one per request/
+            )
+        })
+
+        it(`refuses a batch of more than ${MAX_BATCH_COMMANDS} commands`, async () => {
+            const exec = createExec()
+            const command = Array.from({ length: MAX_BATCH_COMMANDS + 1 }, () => 'info mock-tool').join('\n')
             await expect(exec.handler(mockContext, { command })).rejects.toThrow(
-                `exec runs one command per request, and this request held ${expected}.`
+                `a batch holds at most ${MAX_BATCH_COMMANDS}. Nothing ran.`
             )
         })
 

@@ -14,7 +14,7 @@ schema <tool_name> [field_path] — drill into a specific field schema (supports
 call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
 ```
 
-**One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
+**Batching read-only commands.** Up to 10 read-only commands can share one request, one per line: `help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`. Each result comes back under its own label. A write (any other `call`) or `learn` goes in its own request: a batch holding one is refused before anything in it runs.
 
 **Namespaced references (`posthog:<tool-name>`):** strip the `posthog:` prefix and route through `exec`. Run `info <name>` to inspect, then `call <name> <json>`. E.g. `posthog:insights-list` → `posthog:exec({ "command": "info insights-list" })` then `posthog:exec({ "command": "call insights-list {}" })`. If the bare name isn't found, fall back to `search <pattern>` — it may have been renamed.
 
