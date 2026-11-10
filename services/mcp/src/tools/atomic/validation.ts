@@ -71,16 +71,21 @@ export function validateInsightQuery(query: unknown, prefix: string[] = ['query'
     return parsed.success ? undefined : formatIssues(parsed.error, prefix)
 }
 
-let annotationItemSchema: ZodObjectAny | undefined
+let annotationItemSchema: z.ZodObject | undefined
 
-/** The input schema of annotation-create: the batch item is the single tool's input, unchanged. */
-export function getAnnotationCreateSchema(): ZodObjectAny {
+/**
+ * The input schema of annotation-create, less `full`: the batch item is the single tool's input for
+ * the annotation itself. `full` shapes the single tool's response (the full API response instead of
+ * the short write receipt); a batch returns its own per-item receipts, and the item is sent as the
+ * request body, so the flag must not be part of it.
+ */
+export function getAnnotationCreateSchema(): z.ZodObject {
     if (!annotationItemSchema) {
-        const schema = GENERATED_TOOL_MAP['annotation-create']?.().schema as ZodObjectAny | undefined
+        const schema = GENERATED_TOOL_MAP['annotation-create']?.().schema as z.ZodObject | undefined
         if (!schema) {
             throw new Error('annotation-create is not registered')
         }
-        annotationItemSchema = schema
+        annotationItemSchema = 'full' in schema.shape ? schema.omit({ full: true }) : schema
     }
     return annotationItemSchema
 }

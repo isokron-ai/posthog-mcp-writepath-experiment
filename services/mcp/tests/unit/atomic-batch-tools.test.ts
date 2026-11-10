@@ -219,6 +219,22 @@ describe('annotations-batch-create', () => {
         expect(fake.collection('annotations').size).toBe(8)
     })
 
+    it("keeps annotation-create's receipt flag out of the items and out of the request body", async () => {
+        // annotation-create takes `full` (full response instead of the write receipt); a batch
+        // returns its own per-item receipts, so the item schema leaves the flag out.
+        const itemSchema = AnnotationsBatchCreateSchema.shape.items.element
+        expect(Object.keys(itemSchema.shape)).not.toContain('full')
+        const fake = new FakePostHog()
+        await annotationsBatchCreate(
+            fake.context(),
+            parse(AnnotationsBatchCreateSchema, { items: [{ ...items[0], full: true }] })
+        )
+        const posts = fake.log.filter((entry) => entry.method === 'POST' && entry.path.endsWith('/annotations/'))
+        expect(posts).toHaveLength(1)
+        expect(posts[0]!.body).not.toHaveProperty('full')
+        expect(posts[0]!.body).toMatchObject({ content: 'release note 0' })
+    })
+
     it('refuses two identical items in one batch, and the schema rejects a bad date', async () => {
         const fake = new FakePostHog()
         const result = await annotationsBatchCreate(
