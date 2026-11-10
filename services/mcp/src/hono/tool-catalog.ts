@@ -228,6 +228,7 @@ export class ToolCatalog {
                 ...(preBuilt.renderedNote ? { renderedNote: preBuilt.renderedNote } : {}),
                 title: definition.title,
                 description: definition.description,
+                searchKeywords: definition.search_keywords,
                 scopes: definition.required_scopes ?? [],
                 annotations: definition.annotations,
             })

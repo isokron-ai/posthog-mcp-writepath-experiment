@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { ToolCatalog, toMcpInputSchema } from '@/hono/tool-catalog'
+import { searchToolsRanked } from '@/tools/tool-search'
 import type { ToolBase, ZodObjectAny } from '@/tools/types'
 
 type FakeDefinition = {
@@ -66,7 +67,11 @@ vi.mock('@/tools/generated', () => ({
 
 const DEFINITIONS: Record<string, FakeDefinition> = {
     'tool-a': fakeDef({ required_scopes: ['project:read'] }),
-    'tool-b': fakeDef({ feature: 'insights', annotations: { ...fakeDef().annotations, readOnlyHint: true } }),
+    'tool-b': fakeDef({
+        feature: 'insights',
+        search_keywords: ['prometheus', 'grafana'],
+        annotations: { ...fakeDef().annotations, readOnlyHint: true },
+    }),
     'gen-tool-c': fakeDef({ required_scopes: ['action:write'] }),
     'update-feature-flag': fakeDef({ required_scopes: ['feature_flag:write'] }),
 }
@@ -246,6 +251,17 @@ describe('ToolCatalog', () => {
             expect(toolA).toBeTruthy()
             expect(toolA!.title).toBe('Title')
             expect(toolA!.description).toBe('Desc')
+        })
+
+        // exec search ranks the tools this method returns, so a keyword the catalog
+        // drops can never match on the hosted server.
+        it('carries search keywords from definitions so exec search can match them', () => {
+            const tools = catalog.getFilteredTools({ scopes: ['*'] })
+            const byName = Object.fromEntries(tools.map((t) => [t.name, t.searchKeywords]))
+
+            expect(byName['tool-b']).toEqual(['prometheus', 'grafana'])
+            expect(byName['tool-a']).toBeUndefined()
+            expect(searchToolsRanked(tools, 'prometheus').map((r) => r.name)).toEqual(['tool-b'])
         })
 
         it('should attach scopes and annotations from definitions', () => {
