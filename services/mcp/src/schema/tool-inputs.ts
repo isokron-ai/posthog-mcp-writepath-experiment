@@ -1051,6 +1051,12 @@ const ReadEventsQuerySchema = z
             .optional()
             .describe('Number of events to return per page.'),
         offset: z.number().int().min(0).default(0).optional().describe('Number of events to skip for pagination.'),
+        include_unseen: z
+            .boolean()
+            .optional()
+            .describe(
+                'Also list events that are defined but were not seen in the last 30 days. By default they are left out and only counted.'
+            ),
     })
     .strict()
 
@@ -1173,6 +1179,9 @@ function normalizeQueryFields(source: Record<string, unknown>): Record<string, u
             fields[name] = castStringToInt(fields[name])
         }
     }
+    if (fields['include_unseen'] === 'true' || fields['include_unseen'] === 'false') {
+        fields['include_unseen'] = fields['include_unseen'] === 'true'
+    }
     // Clamped rather than refused: the backend returns at most one page of this size anyway, so
     // a bigger ask is answered instead of costing the caller a round trip.
     if (typeof fields['limit'] === 'number') {
@@ -1259,6 +1268,7 @@ function normalizeReadDataSchemaInput(input: unknown): unknown {
     if (kind !== 'events') {
         delete fields['limit']
         delete fields['offset']
+        delete fields['include_unseen']
     }
     return { query: { ...fields, kind } }
 }
