@@ -1,9 +1,85 @@
 import { z } from 'zod'
 
 import { resolveSchemaPath, summarizeSchema } from './schema-utils'
+import { stripSkillInstructions } from './skill-mentions'
 import type { Tool, ZodObjectAny } from './types'
 
 type JsonSchema = Record<string, unknown>
+
+/**
+ * Wording the query-wrapper schemas inherit from PostHog AI's planner
+ * (`frontend/src/queries/schema/schema-assistant-queries.ts`). Its agent works from a
+ * plan; an MCP agent has none, so "use one of the properties … in the plan" points at
+ * nothing. Rewritten where this server hands a schema to an agent, so the shared
+ * frontend source stays as PostHog AI needs it.
+ *
+ * Exact sentences first, so each one keeps its meaning; the two generic rules after
+ * them catch a sentence the table does not know yet.
+ */
+const PLANNER_WORDING: ReadonlyArray<readonly [RegExp, string]> = [
+    [/Use one of the properties the user has provided in the plan\./g, 'Use a property that exists in the project.'],
+    [/Only use property values from the plan\./g, 'Only use property values that exist in the project.'],
+    [
+        /\s*When exclusion steps appear needed when you're planning the query, make sure to explicitly state this in the plan\./g,
+        '',
+    ],
+    [/exactly as the event appears in the plan/g, 'exactly as the event is named in the project'],
+    [/\s+from the plan\b/g, ''],
+    [/\s+in the plan\b/g, ''],
+]
+
+export function rewritePlannerWording(text: string): string {
+    if (!/\bplan\b/.test(text)) {
+        return text
+    }
+    let rewritten = text
+    for (const [pattern, replacement] of PLANNER_WORDING) {
+        rewritten = rewritten.replace(pattern, replacement)
+    }
+    return rewritten
+}
+
+/**
+ * Tool text as a connection should read it: no PostHog-AI planner wording, and, where
+ * skills cannot be loaded, no instruction to load one.
+ */
+export function agentFacingText(text: string, skillsAvailable: boolean): string {
+    const reworded = rewritePlannerWording(text)
+    return skillsAvailable ? reworded : stripSkillInstructions(reworded)
+}
+
+/** A copy of the schema with every `description` passed through `rewrite`. Shared
+ *  sub-objects are rewritten once, and the input is never mutated. */
+function rewriteSchemaDescriptions(
+    node: unknown,
+    rewrite: (text: string) => string,
+    seen: WeakMap<object, unknown> = new WeakMap()
+): unknown {
+    if (typeof node !== 'object' || node === null) {
+        return node
+    }
+    const cached = seen.get(node)
+    if (cached !== undefined) {
+        return cached
+    }
+    if (Array.isArray(node)) {
+        const out: unknown[] = []
+        seen.set(node, out)
+        for (const child of node) {
+            out.push(rewriteSchemaDescriptions(child, rewrite, seen))
+        }
+        return out
+    }
+    const out: Record<string, unknown> = {}
+    seen.set(node, out)
+    for (const [key, value] of Object.entries(node)) {
+        out[key] =
+            key === 'description' && typeof value === 'string'
+                ? rewrite(value)
+                : rewriteSchemaDescriptions(value, rewrite, seen)
+    }
+    return out
+}
 
 /**
  * Exec mode owns output encoding through the `--json` call flag, so tools must
@@ -22,7 +98,10 @@ export function stripOutputFormatProperty(jsonSchema: JsonSchema): JsonSchema {
     return { ...jsonSchema, properties: rest }
 }
 
-const agentSchemaCache = new WeakMap<object, JsonSchema>()
+const agentSchemaCache = {
+    withSkills: new WeakMap<object, JsonSchema>(),
+    withoutSkills: new WeakMap<object, JsonSchema>(),
+}
 
 /**
  * The input schema exec shows an agent for a tool: `info`, `schema`, and the schema a
@@ -30,17 +109,22 @@ const agentSchemaCache = new WeakMap<object, JsonSchema>()
  * executor's validation, so fields with a Zod `.default()` read as optional. Converted
  * once per tool schema.
  */
-export function agentFacingInputSchema(tool: Pick<Tool<ZodObjectAny>, 'schema' | 'rawInputSchema'>): JsonSchema {
+export function agentFacingInputSchema(
+    tool: Pick<Tool<ZodObjectAny>, 'schema' | 'rawInputSchema'>,
+    skillsAvailable = true
+): JsonSchema {
+    const cache = skillsAvailable ? agentSchemaCache.withSkills : agentSchemaCache.withoutSkills
     const key = (tool.rawInputSchema as object | undefined) ?? tool.schema
-    const cached = agentSchemaCache.get(key)
+    const cached = cache.get(key)
     if (cached) {
         return cached
     }
-    const schema =
+    const base =
         (tool.rawInputSchema as JsonSchema | undefined) ??
         stripOutputFormatProperty(z.toJSONSchema(tool.schema, { io: 'input' }) as JsonSchema)
-    agentSchemaCache.set(key, schema)
-    return schema
+    const rewritten = rewriteSchemaDescriptions(base, (text) => agentFacingText(text, skillsAvailable)) as JsonSchema
+    cache.set(key, rewritten)
+    return rewritten
 }
 
 /** Upper bound on the schema text one validation error carries (about 2,000 tokens).
@@ -126,11 +210,12 @@ function namesAndTypes(summary: unknown): unknown {
  */
 export function describeFailingFieldSchemas(
     tool: Pick<Tool<ZodObjectAny>, 'name' | 'schema' | 'rawInputSchema'>,
-    issues: readonly z.core.$ZodIssue[]
+    issues: readonly z.core.$ZodIssue[],
+    skillsAvailable = true
 ): string {
     let full: JsonSchema
     try {
-        full = agentFacingInputSchema(tool)
+        full = agentFacingInputSchema(tool, skillsAvailable)
     } catch {
         return ''
     }

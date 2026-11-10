@@ -6,5 +6,3 @@ business-knowledge-documents|dashboard|docs-search|execute-sql|feature-flag|proj
 
 exec – run any PostHog command; its `command` description has the syntax.
 render-ui – show a tool result as an interactive app.
-
-Prioritize skills over tools.

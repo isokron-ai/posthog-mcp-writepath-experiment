@@ -26,7 +26,7 @@ import { APP_DATA_META_KEY } from '@/ui-apps/types'
 
 import { readParamAliases } from './cast-helpers'
 import { type ExecLearnCatalog, QUALIFIED_IDENTIFIER, tokenizeLearnInput } from './exec-learn'
-import { agentFacingInputSchema, describeFailingFieldSchemas } from './exec-schema-view'
+import { agentFacingInputSchema, agentFacingText, describeFailingFieldSchemas } from './exec-schema-view'
 import {
     TOKEN_CHAR_LIMIT,
     compactInfoSchema,
@@ -36,6 +36,7 @@ import {
     resolveSchemaPath,
     summarizeSchema,
 } from './schema-utils'
+import { stripSkillInstructions } from './skill-mentions'
 import { type BuiltInSkillHint, formatSkillLookupMiss, type SkillLookupMissKind } from './skills/notFound'
 import { closestToolNames, isRegexPattern, resolveToolAlias, searchToolsRanked, searchToolsRegex } from './tool-search'
 import { getToolDefinitions, type FlagGatedTool, type ScopeGatedTool } from './toolDefinitions'
@@ -270,6 +271,12 @@ export interface ExecToolOptions {
      * pass false only for a caller that confirms destructive calls some other way.
      */
     requireDestructiveConfirmation?: boolean
+    /**
+     * Whether this connection can load PostHog skills (`learn` with skills). When false,
+     * `info` descriptions and `_agentNote`s drop their "load the <name> skill" steps, so
+     * the agent is not told to do something it cannot. Defaults to true.
+     */
+    skillsAvailable?: boolean
     learnCatalog?: ExecLearnCatalog
     /**
      * Client is an inline-exec UI-app host that renders MCP UI apps on the exec
@@ -425,6 +432,20 @@ function splitBatchedCommands(command: string): string[] | undefined {
     }
     commands.push(current.trim())
     return commands
+}
+
+/** Drops "load the <name> skill" steps from a result's `_agentNote` in place, so the
+ *  result's lazily formatted text (`withInformationalResponse`) sees the change. */
+function stripSkillInstructionsFromAgentNote(result: unknown): void {
+    if (!isRecord(result) || typeof result['_agentNote'] !== 'string') {
+        return
+    }
+    const note = stripSkillInstructions(result['_agentNote'])
+    if (note) {
+        result['_agentNote'] = note
+    } else {
+        delete result['_agentNote']
+    }
 }
 
 function batchedCommandMessage(commands: string[]): string {
@@ -1832,6 +1853,7 @@ export function createExecTool(
     const ExecSchema = makeExecSchema(commandReference)
     const flagGatedTools = options.flagGatedTools ?? []
     const requireDestructiveConfirmation = options.requireDestructiveConfirmation ?? true
+    const skillsAvailable = options.skillsAvailable ?? true
 
     return {
         name: 'exec',
@@ -2080,7 +2102,7 @@ export function createExecTool(
                     // validation: fields with a Zod `.default()` (e.g. a query `kind` discriminator)
                     // are optional and auto-filled. The default `io: 'output'` would list them as
                     // required, misrepresenting them as mandatory input the caller must supply.
-                    const fullSchema = agentFacingInputSchema(tool)
+                    const fullSchema = agentFacingInputSchema(tool, skillsAvailable)
                     // YAML for the top shape, but inputSchema stays as a JSON
                     // string dumped inside the YAML — JSON Schema is conventionally
                     // JSON and converting it to YAML obscures `$ref`, `oneOf`, etc.
@@ -2094,7 +2116,7 @@ export function createExecTool(
                     const topShape = {
                         name: tool.name,
                         title: tool.title,
-                        description: tool.description,
+                        description: agentFacingText(tool.description, skillsAvailable),
                         annotations: tool.annotations,
                     }
                     const fullOutput = serialize(topShape, fullSchema)
@@ -2133,7 +2155,7 @@ export function createExecTool(
                     )
                     // See the `info` command: `io: 'input'` keeps this in sync with the advertised
                     // schema and validation, so `.default()` fields aren't shown as required.
-                    const fullJsonSchema = agentFacingInputSchema(schemaTool)
+                    const fullJsonSchema = agentFacingInputSchema(schemaTool, skillsAvailable)
 
                     if (!fieldPath) {
                         // The bare `schema <tool>` view is always a summary. Any
@@ -2277,7 +2299,7 @@ export function createExecTool(
                         // so it can fix the call without an `info` or `schema` round trip.
                         // Analytics keeps the short message above.
                         throw new ToolInputValidationError(
-                            `${message}${describeFailingFieldSchemas(tool, validation.error.issues)}`,
+                            `${message}${describeFailingFieldSchemas(tool, validation.error.issues, skillsAvailable)}`,
                             describeValidationError(validation.error, toolSchema)
                         )
                     }
@@ -2320,6 +2342,9 @@ export function createExecTool(
                         throw err
                     }
                     const durationMs = Date.now() - startedAt
+                    if (!skillsAvailable) {
+                        stripSkillInstructionsFromAgentNote(result)
+                    }
                     // The text path below builds no payload, so emptiness is reported from here.
                     const resultShape = isEmptyToolResult(result, tool.name) ? { result_empty: true } : {}
                     const formattedOverride =

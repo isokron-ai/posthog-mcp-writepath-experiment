@@ -89,6 +89,9 @@ export interface InstructionsContext {
     inboxFirstEnabled?: boolean | undefined
     /** Read-only connections lack `inbox-reports-claim`, so they get no pull-request line. */
     inboxClaimEnabled?: boolean | undefined
+    /** Whether this connection can load PostHog skills through `learn`. Without it the
+     *  instructions must not tell the agent to prefer skills it has no way to load. */
+    skillsEnabled?: boolean | undefined
 }
 
 const REPLAY_VISION_TOOLS = ['vision-scanners-inline-scan', 'vision-requests-create', 'vision-requests-get']
@@ -517,6 +520,7 @@ export class InstructionsFormatter {
             replay_vision: replayVisionAvailable(ctx) ? REPLAY_VISION : '',
             extra_commands: opts.extraCommands ?? '',
             whats_new_check: docsSearchAvailable(ctx) ? WHATS_NEW_WITH_DOCS_SEARCH : WHATS_NEW_CHANGELOG_ONLY,
+            skills_priority: ctx.skillsEnabled ? 'Prioritize skills over tools.' : '',
         }
         const body = sections
             .map((s) => s.trim())

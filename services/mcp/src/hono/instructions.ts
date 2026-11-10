@@ -112,6 +112,11 @@ export class InstructionsBuilder {
                 state.toolFeatureFlags?.[MCP_INBOX_FIRST_FLAG] === true &&
                 INBOX_FIRST_TOOLS.every((name) => state.allTools.some((tool) => tool.name === name)),
             inboxClaimEnabled: state.allTools.some((tool) => tool.name === INBOX_CLAIM_TOOL),
+            // A state built without client context (tests, the CLI guide) falls back to the flag alone.
+            skillsEnabled:
+                state.requestContext || state.sessionContext
+                    ? this.getExecLearnCapabilities(state).skillsEnabled
+                    : state.toolFeatureFlags?.[MCP_EXEC_SKILLS_FEATURE_FLAG] === true,
         }
     }
 

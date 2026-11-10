@@ -967,6 +967,7 @@ export class ToolExecutor {
                     this.skillCatalogService?.getCatalog()
                 ),
                 flagGatedTools: state.flagGatedTools,
+                skillsAvailable: this.instructionsBuilder.execSkillsEnabled(state),
                 ...(state.heldTools ? { heldTools: state.heldTools } : {}),
                 builtInSkillHint: this.builtInSkillHint(state),
                 oauthClientId: state.oauthClientId,

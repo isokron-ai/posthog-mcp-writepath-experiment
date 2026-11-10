@@ -109,6 +109,7 @@ describe('a failed call carries the failing field schema', () => {
         expect(retention.message).toMatch(/same as retentionFilter\.(returningEntity|targetEntity)/)
         expect(retention.message).toContain('"id"')
         expect(retention.message.length).toBeLessThan(MAX_ERROR_SCHEMA_CHARS + 1_000)
+        expect(retention.message).not.toMatch(/\b(in|from) the plan\b/)
     })
 })
 

@@ -6,4 +6,4 @@
 
 {available_tools}
 
-Prioritize skills over tools.
+{skills_priority}
