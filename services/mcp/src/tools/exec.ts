@@ -472,6 +472,20 @@ function parseCallBodyFlags(input: string): { forceJson: boolean; confirmed: boo
     return { forceJson, confirmed, rest }
 }
 
+/** Reads `--json` written before or after the tool name of an `info` command, as `call` does. */
+function parseInfoArgs(input: string): { forceJson: boolean; target: string } {
+    let target = input.trim()
+    let forceJson = false
+    for (;;) {
+        const stripped = target.replace(/^--json(?=\s|$)/, '').replace(/(?:^|\s)--json$/, '')
+        if (stripped === target) {
+            return { forceJson, target }
+        }
+        forceJson = true
+        target = stripped.trim()
+    }
+}
+
 // Extracts the inner tool name from an exec `call` command, e.g.
 // "call my-tool {...}" → "my-tool". Returns undefined for other verbs or
 // malformed input. Used by analytics to surface the real tool being invoked
@@ -578,15 +592,14 @@ export function describeExecCommand(command: string, isKnownToolName: (name: str
     // The target must be parsed exactly as the dispatcher looks it up, or a
     // rejected command gets attributed to a valid tool. `call` strips its flags
     // then takes the first token; `schema` takes the first token. `info` is the
-    // exception: it hands the entire remaining argument to `findTool` as an exact
-    // name (after an optional `--json`), so `info execute-sql extra` looks up
-    // "execute-sql extra", resolves to nothing, and records `unrecognized` — not
-    // the `execute-sql` its first token would suggest.
+    // exception: it takes the entire remaining argument (minus `--json`) as the
+    // name and rejects anything after it, so `info execute-sql extra` records
+    // `unrecognized` — not the `execute-sql` its first token would suggest.
     let target: string
     if (rawVerb === 'call') {
         target = parseCommand(parseCallFlags(rest).rest).verb
     } else if (rawVerb === 'info') {
-        target = rest.replace(/^--json(\s+|$)/, '').trim()
+        target = parseInfoArgs(rest).target
     } else {
         target = parseCommand(rest).verb
     }
@@ -2027,10 +2040,18 @@ export function createExecTool(
                     if (!rest) {
                         throw new ExecCommandError('Usage: info [--json] <tool_name>', 'usage')
                     }
-                    const forceJson = rest.startsWith('--json ') || rest === '--json'
-                    const infoArgs = forceJson ? rest.slice('--json'.length).trim() : rest
+                    const { forceJson, target: infoArgs } = parseInfoArgs(rest)
                     if (!infoArgs) {
                         throw new ExecCommandError('Usage: info [--json] <tool_name>', 'usage')
+                    }
+                    // No tool name holds whitespace. Looking the whole string up would report
+                    // an unknown tool and suggest a search for the name plus the extra text.
+                    const extraInput = parseCommand(infoArgs)
+                    if (extraInput.rest) {
+                        throw new ExecCommandError(
+                            `Usage: info [--json] <tool_name>. Unexpected input after "${extraInput.verb}": "${extraInput.rest}". To inspect one field, run "schema ${extraInput.verb} <field_path>".`,
+                            'usage'
+                        )
                     }
                     const tool = findTool(
                         await resolveTools(),

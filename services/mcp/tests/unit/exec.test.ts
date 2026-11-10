@@ -1503,6 +1503,28 @@ describe('exec tool', () => {
             expect(typeof parsed.inputSchema).toBe('object')
         })
 
+        // `call` accepts its flags after the tool name, so agents write `info` the same way.
+        it.each(['info mock-tool --json', 'info --json mock-tool --json'])(
+            'accepts --json after the tool name in %j',
+            async (command) => {
+                const exec = createExec()
+                const result = (await exec.handler(mockContext, { command })) as string
+                expect(JSON.parse(result).name).toBe('mock-tool')
+            }
+        )
+
+        // Extra text used to be looked up as part of the name, so an existing tool came
+        // back as unknown with a hint to search for the name plus the extra text.
+        it.each([
+            ['info mock-tool name', 'Unexpected input after "mock-tool": "name"'],
+            ['info mock-tool --verbose', 'Unexpected input after "mock-tool": "--verbose"'],
+            ['info --json mock-tool name', 'Unexpected input after "mock-tool": "name"'],
+        ])('rejects %j as a usage error that names the extra input', async (command, expected) => {
+            const call = createExec().handler(mockContext, { command })
+            await expect(call).rejects.toMatchObject({ reason: 'usage' })
+            await expect(call).rejects.toThrow(expected)
+        })
+
         it('bakes the drill-down imperative into each complex field hint when info is summarized', async () => {
             const wideShape: Record<string, z.ZodType> = {}
             for (let i = 0; i < 1500; i++) {
@@ -2321,10 +2343,10 @@ describe('exec tool', () => {
             ['search query-', 'search', undefined],
             ['info execute-sql', 'info', 'execute-sql'],
             ['info --json execute-sql', 'info', 'execute-sql'],
+            ['info execute-sql --json', 'info', 'execute-sql'],
             ['schema query-trends series', 'schema', 'query-trends'],
-            // `info` matches the whole remainder as an exact tool name, so a
-            // trailing token makes the lookup fail — telemetry must mirror the
-            // dispatcher's rejection, not credit the valid first token.
+            // `info` takes one tool name and rejects anything after it — telemetry
+            // must mirror the dispatcher's rejection, not credit the valid first token.
             ['info execute-sql extra', 'info', 'unrecognized'],
             ['call my-tool {"a":1}', 'call', 'my-tool'],
             ['call --json --confirm my-tool {}', 'call', 'my-tool'],
