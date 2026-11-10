@@ -1988,50 +1988,48 @@ export function createExecTool(
                         exec_search_gateway_match_count: matchedNames.filter(isGatewayToolName).length,
                     })
 
-                    if (gatedMatches.length > 0) {
-                        const requiredScopes = [...new Set(gatedMatches.flatMap((t) => t.missingScopes))].sort()
-                        return JSON.stringify({
-                            matches,
-                            scope_gated_matches: gatedMatches.map((t) => ({
-                                name: t.name,
-                                missing_scopes: t.missingScopes,
-                            })),
-                            hint:
-                                `These tools also match but are hidden because the API key is missing the ` +
-                                `required scope(s): ${requiredScopes.join(', ')}. ${missingScopeRecovery(context, options.oauthClientId)}`,
-                        })
-                    }
+                    // Scope-gated matches are reported next to the usual notes, not instead of
+                    // them: a capped page is still capped when a hidden tool also matched.
+                    const gated =
+                        gatedMatches.length > 0
+                            ? {
+                                  scope_gated_matches: gatedMatches.map((t) => ({
+                                      name: t.name,
+                                      missing_scopes: t.missingScopes,
+                                  })),
+                              }
+                            : {}
+                    const gatedHint =
+                        gatedMatches.length > 0
+                            ? `These tools also match but are hidden because the API key is missing the ` +
+                              `required scope(s): ${[...new Set(gatedMatches.flatMap((t) => t.missingScopes))].sort().join(', ')}. ${missingScopeRecovery(context, options.oauthClientId)}`
+                            : undefined
                     if (matches.length === 0) {
                         return JSON.stringify({
                             matches: [],
-                            hint: `No tools matched "${query}". Search again with plain words that describe the task, for example "create dashboard". Run "tools" only if that also finds nothing.`,
+                            ...gated,
+                            hint:
+                                gatedHint ??
+                                `No tools matched "${query}". Search again with plain words that describe the task, for example "create dashboard". Run "tools" only if that also finds nothing.`,
                         })
                     }
                     const fallbackHint =
                         fallbackFrom === undefined
                             ? undefined
                             : `No tool is named "${fallbackFrom}". These are the closest matches by its words.`
-                    if (truncatedFrom > 0) {
-                        const catalogHint = catalogDiscoveryHint(
-                            allTools,
-                            namesMatchingSearch(matchedNames, searchTerm)
-                        )
+                    const catalogHint = catalogDiscoveryHint(allTools, namesMatchingSearch(matchedNames, searchTerm))
+                    const truncationHint =
+                        truncatedFrom > 0
+                            ? `Showing the top ${MAX_RANKED_SEARCH_RESULTS} of ${truncatedFrom} matches, ranked by relevance. Use a more specific query to narrow the results.`
+                            : undefined
+                    const hint = [fallbackHint, catalogHint, truncationHint, gatedHint].filter(Boolean).join(' ')
+                    if (hint) {
                         return JSON.stringify({
                             matches,
-                            truncated: true,
-                            hint: [
-                                fallbackHint,
-                                catalogHint,
-                                `Showing the top ${MAX_RANKED_SEARCH_RESULTS} of ${truncatedFrom} matches, ranked by relevance. Use a more specific query to narrow the results.`,
-                            ]
-                                .filter(Boolean)
-                                .join(' '),
+                            ...(truncatedFrom > 0 ? { truncated: true } : {}),
+                            ...gated,
+                            hint,
                         })
-                    }
-                    const catalogHint = catalogDiscoveryHint(allTools, namesMatchingSearch(matchedNames, searchTerm))
-                    const hint = [fallbackHint, catalogHint].filter(Boolean).join(' ')
-                    if (hint) {
-                        return JSON.stringify({ matches, hint })
                     }
                     return JSON.stringify(matches)
                 }

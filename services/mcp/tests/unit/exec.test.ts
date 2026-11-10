@@ -2022,6 +2022,37 @@ describe('exec tool', () => {
             expect(result.hint).toContain('30')
         })
 
+        // A hidden tool that also matches used to replace the whole response, so the
+        // agent never learned the page was capped or which catalog tools to check first.
+        it('keeps the truncation note and catalog hint when a scope-gated tool also matches', async () => {
+            const tools = [
+                ...Array.from({ length: 30 }, (_, i) =>
+                    makeMockTool({ name: `billing-tool-${i}`, title: `Billing tool ${i}` })
+                ),
+                makeMockTool({ name: 'metric-list' }),
+                makeMockTool({ name: 'metric-describe' }),
+                makeMockTool({ name: 'data-catalog-metric-run' }),
+            ]
+            const exec = createExecTool(tools, mockContext, 'desc', 'cmd', undefined, undefined, [
+                {
+                    name: 'billing-export',
+                    title: 'Export billing',
+                    description: 'Export billing data',
+                    missingScopes: ['billing:write'],
+                    requiredScopes: ['billing:write'],
+                },
+            ])
+
+            const result = JSON.parse((await exec.handler(mockContext, { command: 'search billing' })) as string)
+
+            expect(result.matches).toHaveLength(25)
+            expect(result.truncated).toBe(true)
+            expect(result.hint).toContain('Showing the top 25 of 30 matches')
+            expect(result.hint).toContain('metric-list')
+            expect(result.scope_gated_matches).toEqual([{ name: 'billing-export', missing_scopes: ['billing:write'] }])
+            expect(result.hint).toContain('billing:write')
+        })
+
         it('reports an invalid regex gracefully', async () => {
             const exec = createExec([makeMockTool()])
             await expect(exec.handler(mockContext, { command: 'search [invalid' })).rejects.toThrow(
