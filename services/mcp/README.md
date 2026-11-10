@@ -388,6 +388,14 @@ x-posthog-mcp-consumer: plugin
 
 The header wins when both the header and the query parameter are set. Reserved values: `plugin` (AI-tool plugin installs), `posthog-code` (PostHog Desktop Tasks sandbox), `slack` (Slack integration).
 
+### Batches, atomic dashboards and partial updates
+
+These tools combine several REST calls into one tool call. See [docs/atomic-and-batch-tools.md](docs/atomic-and-batch-tools.md) for the design.
+
+- `insights-batch-update`, `annotations-batch-create` and `annotations-batch-delete` change up to 50 objects per call. They are **best-effort, not all-or-nothing**: every item is validated first and nothing is written if any item fails validation; after that, a failed write is reported on its item and the others are kept. Each item gets its own result, and `dry_run` validates without writing.
+- `dashboard-create-with-insights` validates every tile (running each query once by default), then creates the dashboard and its tiles. If a later step fails, it soft-deletes what it created in that call and reports what was rolled back.
+- `insight-update-query-partial`, `feature-flag-update-conditions` and `survey-update-question` change one element of a nested array (a query series, a flag condition or variant, a survey question). Each is a read-merge-write that re-reads the object just before writing and writes nothing if it changed, returning a conflict to retry. **Remaining race window:** a write from outside this server process (the PostHog UI, another server instance) that lands in the one round trip between that final check and the write can still be overwritten. Flags send their `version`, so the API refuses such a write on flags that check it, and otherwise the receipt reports `concurrent_write_detected`. Insights and surveys have no precondition in the API, so in that window nothing can detect it.
+
 ### Data processing
 
 The MCP server runs in PostHog's US and EU Kubernetes clusters and stores session state in the region you connect to.

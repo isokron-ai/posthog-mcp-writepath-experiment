@@ -53,6 +53,14 @@ Each entry in `schema/tool-definitions.json` needs a clear description, a featur
 
 If you add a new feature, also list it in the feature list in `services/mcp/README.md` and add it to `tests/unit/tool-filtering.test.ts`.
 
+### Tools that write several objects or patch nested arrays
+
+Build them on the primitives in `atomic/` instead of hand-rolling the loop:
+`runBatch` (validate every item, then best-effort writes with per-item results and `dry_run`),
+`CompensationLog` (compensating rollback for multi-step creates) and
+`versionCheckedUpdate` (read-merge-write that re-reads and compares the version before writing).
+[docs/atomic-and-batch-tools.md](../../docs/atomic-and-batch-tools.md) explains when to use each and what each guarantees.
+
 ## Schema Design Philosophy
 
 ### Input Schemas
