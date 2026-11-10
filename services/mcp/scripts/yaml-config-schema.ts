@@ -259,6 +259,25 @@ export const ToolConfigSchema = z
                  * for JSON output.
                  */
                 text_include: z.array(z.string()).optional(),
+                /**
+                 * Return a short write receipt instead of the whole object: `id`, `short_id`, `key`, `name`
+                 * and `version` when present, the extra `fields` listed here, the soft-delete field on a
+                 * soft-delete tool, and `_posthogUrl`. An update (PATCH/PUT with a body) also reads the
+                 * object first and lists each sent field it changed as `{from, to}` and each it left alone
+                 * under `unchanged`; set `diff: false` to skip that read. Codegen adds an optional `full`
+                 * request param that returns the old response, with `include`/`exclude` applied as before.
+                 */
+                receipt: z
+                    .union([
+                        z.literal(true),
+                        z
+                            .object({
+                                fields: z.array(z.string()).optional(),
+                                diff: z.boolean().optional(),
+                            })
+                            .strict(),
+                    ])
+                    .optional(),
                 /** Wrap user-authored response data in an explicit informational-only tag boundary. */
                 informational_wrapper: z
                     .object({
@@ -285,6 +304,10 @@ export const ToolConfigSchema = z
             .refine((data) => !(data.text_include?.length && data.informational_wrapper), {
                 message:
                     'response.text_include and response.informational_wrapper both own the text channel — pick one',
+            })
+            .refine((data) => !(data.receipt && (data.selectable || data.expandable?.length)), {
+                message:
+                    'response.receipt replaces the default response, so `fields`/`expand` would only apply with `full` — use one or the other',
             })
             .optional(),
         /**
@@ -358,6 +381,14 @@ export const ToolConfigSchema = z
         message:
             '`response.strip_nulls` cannot be combined with `list: true` — rows encode as a TOON table, and per-item null removal makes a ragged table larger. Use `response.exclude` to drop the fields instead.',
         path: ['response', 'strip_nulls'],
+    })
+    .refine((data) => !(data.response?.receipt && data.list), {
+        message: '`response.receipt` describes one written object, so it cannot be combined with `list: true`.',
+        path: ['response', 'receipt'],
+    })
+    .refine((data) => !(data.response?.receipt && data.input_schema), {
+        message: '`response.receipt` is not supported on `input_schema` tools yet.',
+        path: ['response', 'receipt'],
     })
     // confirmed_action emits two factories (`-prepare`, `-execute`) via a
     // codegen path that doesn't currently wrap either with `withUiApp`.

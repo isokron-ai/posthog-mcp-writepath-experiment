@@ -5,14 +5,23 @@ import type { Schemas } from '@/api/generated'
 import * as orvalSchemas from '@/generated/actions/api'
 import { withUiApp } from '@/resources/ui-apps'
 import { castStringToInt } from '@/tools/cast-helpers'
-import { withPostHogUrl, type WithPostHogUrl } from '@/tools/tool-utils'
+import { withPostHogUrl, buildWriteReceipt, readReceiptPreImage, type WithPostHogUrl } from '@/tools/tool-utils'
 import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
 
 const ActionCreateSchema = () => {
     const ActionsCreateBody = orvalSchemas.ActionsCreateBody()
-    return ActionsCreateBody.omit({ _create_in_folder: true }).extend({
-        name: ActionsCreateBody.shape['name'].describe('Name of the action (must be unique within the project)'),
-    })
+    return ActionsCreateBody.omit({ _create_in_folder: true })
+        .extend({
+            name: ActionsCreateBody.shape['name'].describe('Name of the action (must be unique within the project)'),
+        })
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const actionCreate = (): ToolBase<ReturnType<typeof ActionCreateSchema>, WithPostHogUrl<Schemas.Action>> =>
@@ -48,13 +57,21 @@ const actionCreate = (): ToolBase<ReturnType<typeof ActionCreateSchema>, WithPos
                 path: `/api/projects/${encodeURIComponent(String(projectId))}/actions/`,
                 body,
             })
-            return await withPostHogUrl(context, result, `/data-management/actions/${result.id}`)
+            const filtered = (params.full ? result : buildWriteReceipt(result, { fields: [] })) as typeof result
+            return await withPostHogUrl(context, filtered, `/data-management/actions/${filtered.id}`)
         },
     })
 
 const ActionDeleteSchema = () => {
     const ActionsDestroyParams = orvalSchemas.ActionsDestroyParams()
-    return ActionsDestroyParams.omit({ project_id: true })
+    return ActionsDestroyParams.omit({ project_id: true }).extend({
+        full: z
+            .boolean()
+            .optional()
+            .describe(
+                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+            ),
+    })
 }
 
 const actionDelete = (): ToolBase<ReturnType<typeof ActionDeleteSchema>, Schemas.Action> => ({
@@ -67,7 +84,8 @@ const actionDelete = (): ToolBase<ReturnType<typeof ActionDeleteSchema>, Schemas
             path: `/api/projects/${encodeURIComponent(String(projectId))}/actions/${encodeURIComponent(String(params.id))}/`,
             body: { deleted: true },
         })
-        return result
+        const filtered = (params.full ? result : buildWriteReceipt(result, { fields: ['deleted'] })) as typeof result
+        return filtered
     },
 })
 
@@ -95,9 +113,16 @@ const actionGet = (): ToolBase<ReturnType<typeof ActionGetSchema>, WithPostHogUr
 const ActionUpdateSchema = () => {
     const ActionsPartialUpdateBody = orvalSchemas.ActionsPartialUpdateBody()
     const ActionsPartialUpdateParams = orvalSchemas.ActionsPartialUpdateParams()
-    return ActionsPartialUpdateParams.omit({ project_id: true }).extend(
-        ActionsPartialUpdateBody.omit({ _create_in_folder: true }).shape
-    )
+    return ActionsPartialUpdateParams.omit({ project_id: true })
+        .extend(ActionsPartialUpdateBody.omit({ _create_in_folder: true }).shape)
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const actionUpdate = (): ToolBase<ReturnType<typeof ActionUpdateSchema>, WithPostHogUrl<Schemas.Action>> =>
@@ -128,12 +153,21 @@ const actionUpdate = (): ToolBase<ReturnType<typeof ActionUpdateSchema>, WithPos
             if (params.pinned_at !== undefined) {
                 body['pinned_at'] = params.pinned_at
             }
+            const before = params.full
+                ? undefined
+                : await readReceiptPreImage(
+                      context,
+                      `/api/projects/${encodeURIComponent(String(projectId))}/actions/${encodeURIComponent(String(params.id))}/`
+                  )
             const result = await context.api.request<Schemas.Action>({
                 method: 'PATCH',
                 path: `/api/projects/${encodeURIComponent(String(projectId))}/actions/${encodeURIComponent(String(params.id))}/`,
                 body,
             })
-            return await withPostHogUrl(context, result, `/data-management/actions/${result.id}`)
+            const filtered = (
+                params.full ? result : buildWriteReceipt(result, { fields: [], sent: body, before })
+            ) as typeof result
+            return await withPostHogUrl(context, filtered, `/data-management/actions/${filtered.id}`)
         },
     })
 

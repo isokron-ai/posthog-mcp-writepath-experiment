@@ -303,6 +303,10 @@
         "form_content": {
             "description": "Hosted-form content configuration for external_survey forms. Do not provide this field unless editing hosted-form content. Preserve existing content fields that should remain."
         },
+        "full": {
+            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
+            "type": "boolean"
+        },
         "id": {
             "description": "A UUID string identifying this survey.",
             "type": "string"

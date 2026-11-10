@@ -249,6 +249,152 @@ function removeAtPath(obj: unknown, segments: string[]): void {
 }
 
 /**
+ * Fields a write receipt keeps whenever the response has them: enough to name the object, link
+ * to it and pass its version to the next write.
+ */
+export const RECEIPT_IDENTITY_FIELDS = ['id', 'short_id', 'key', 'name', 'version'] as const
+
+export interface WriteReceiptOptions {
+    /** Extra dot-path fields (wildcards allowed) the receipt keeps beyond the identity fields. */
+    fields?: readonly string[]
+    /** The request body the write sent. Its keys are the fields the receipt diffs. */
+    sent?: Record<string, unknown>
+    /** The object as it was before the write, read by `readReceiptPreImage`. */
+    before?: unknown
+}
+
+export interface ReceiptChange {
+    from?: unknown
+    to: unknown
+}
+
+export type WriteReceipt = Record<string, unknown> & {
+    changed?: Record<string, ReceiptChange>
+    unchanged?: string[]
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+    if (a === b) {
+        return true
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+        return a.length === b.length && a.every((item, index) => deepEqual(item, b[index]))
+    }
+    if (isPlainRecord(a) && isPlainRecord(b)) {
+        const aKeys = Object.keys(a).filter((key) => a[key] !== undefined)
+        const bKeys = Object.keys(b).filter((key) => b[key] !== undefined)
+        return aKeys.length === bKeys.length && aKeys.every((key) => deepEqual(a[key], b[key]))
+    }
+    return false
+}
+
+/** `false`, `null`, `''`, `[]` and `{}`: what an unset field and its default look like. */
+function isEmptyDefault(value: unknown): boolean {
+    if (value === undefined || value === null || value === false || value === '') {
+        return true
+    }
+    if (Array.isArray(value)) {
+        return value.length === 0
+    }
+    return isPlainRecord(value) && Object.keys(value).length === 0
+}
+
+/**
+ * Collects the leaf-most paths at which `before` and `after` differ. Objects recurse by key and
+ * same-length arrays by index, so editing one question of three reports `questions.1.question`
+ * rather than both whole arrays. Arrays whose length changed are reported whole. Inside an object,
+ * a key that was absent and is now `false`, `null`, empty or `[]` is the server filling a default,
+ * not a change, and is left out.
+ */
+function collectChanges(before: unknown, after: unknown, path: string, into: Record<string, ReceiptChange>): void {
+    if (deepEqual(before, after)) {
+        return
+    }
+    if (before === undefined && isEmptyDefault(after) && path.includes('.')) {
+        return
+    }
+    if (isPlainRecord(before) && isPlainRecord(after)) {
+        for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            collectChanges(before[key], after[key], `${path}.${key}`, into)
+        }
+        return
+    }
+    if (Array.isArray(before) && Array.isArray(after) && before.length === after.length) {
+        before.forEach((item, index) => collectChanges(item, after[index], `${path}.${index}`, into))
+        return
+    }
+    into[path] = { from: before ?? null, to: after ?? null }
+}
+
+/**
+ * Shrinks a write or delete response to a receipt: the identity fields, any extra `fields`, and,
+ * when the caller sent a body, what the write changed. With a pre-image each sent field that
+ * changed is listed under `changed` as `{from, to}` and each that did not under `unchanged`, so a
+ * no-op write is visible. Without one (the read failed, or the tool creates) a sent field that
+ * the response carries is listed with its stored value only.
+ *
+ * The receipt is computed from the server's response, never from the request, so it shows what
+ * was stored. `from` comes from a read made just before the write and can be stale if someone else
+ * edited the object in between; the write itself is the same request it always was.
+ */
+export function buildWriteReceipt(result: unknown, options: WriteReceiptOptions = {}): WriteReceipt {
+    if (!isPlainRecord(result)) {
+        return result as WriteReceipt
+    }
+    const receipt: WriteReceipt = pickResponseFields(result, [
+        ...RECEIPT_IDENTITY_FIELDS,
+        ...(options.fields ?? []),
+    ]) as WriteReceipt
+    const sentKeys = Object.keys(options.sent ?? {})
+    if (sentKeys.length === 0) {
+        return receipt
+    }
+    const before = isPlainRecord(options.before) ? options.before : undefined
+    const changed: Record<string, ReceiptChange> = {}
+    const unchanged: string[] = []
+    for (const key of sentKeys) {
+        if (!(key in result)) {
+            continue
+        }
+        if (!before) {
+            changed[key] = { to: result[key] ?? null }
+            continue
+        }
+        const changesForKey: Record<string, ReceiptChange> = {}
+        collectChanges(before[key], result[key], key, changesForKey)
+        if (Object.keys(changesForKey).length === 0) {
+            unchanged.push(key)
+        } else {
+            Object.assign(changed, changesForKey)
+        }
+    }
+    if (Object.keys(changed).length > 0) {
+        receipt.changed = changed
+    }
+    if (unchanged.length > 0) {
+        receipt.unchanged = unchanged
+    }
+    return receipt
+}
+
+/**
+ * Reads the object a write is about to change, for the receipt's `from` values. Best-effort: a
+ * failed read returns undefined and the receipt falls back to stored values only. The read is
+ * display-only and never feeds the write.
+ */
+export async function readReceiptPreImage<T = unknown>(context: Context, path: string): Promise<T | undefined> {
+    try {
+        return await context.api.request<T>({ method: 'GET', path })
+    } catch {
+        return undefined
+    }
+}
+
+/**
  * Remove keys whose value is `null`, recursing through objects and arrays. Array element
  * positions are kept.
  *

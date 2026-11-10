@@ -5,7 +5,14 @@ import type { Schemas } from '@/api/generated'
 import * as orvalSchemas from '@/generated/cohorts/api'
 import { withUiApp } from '@/resources/ui-apps'
 import { castStringToInt } from '@/tools/cast-helpers'
-import { withPostHogUrl, pickResponseFields, omitResponseFields, type WithPostHogUrl } from '@/tools/tool-utils'
+import {
+    withPostHogUrl,
+    buildWriteReceipt,
+    pickResponseFields,
+    readReceiptPreImage,
+    omitResponseFields,
+    type WithPostHogUrl,
+} from '@/tools/tool-utils'
 import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
 
 const CohortsAddPersonsToStaticCohortPartialUpdateSchema = () => {
@@ -44,7 +51,14 @@ const cohortsAddPersonsToStaticCohortPartialUpdate = (): ToolBase<
 
 const CohortsCreateSchema = () => {
     const CohortsCreateBody = orvalSchemas.CohortsCreateBody()
-    return CohortsCreateBody.omit({ _create_in_folder: true, _create_static_person_ids: true })
+    return CohortsCreateBody.omit({ _create_in_folder: true, _create_static_person_ids: true }).extend({
+        full: z
+            .boolean()
+            .optional()
+            .describe(
+                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+            ),
+    })
 }
 
 const cohortsCreate = (): ToolBase<ReturnType<typeof CohortsCreateSchema>, WithPostHogUrl<Schemas.Cohort>> =>
@@ -77,7 +91,10 @@ const cohortsCreate = (): ToolBase<ReturnType<typeof CohortsCreateSchema>, WithP
                 path: `/api/projects/${encodeURIComponent(String(projectId))}/cohorts/`,
                 body,
             })
-            return await withPostHogUrl(context, result, `/cohorts/${result.id}`)
+            const filtered = (
+                params.full ? result : buildWriteReceipt(result, { fields: ['is_static', 'is_calculating'] })
+            ) as typeof result
+            return await withPostHogUrl(context, filtered, `/cohorts/${filtered.id}`)
         },
     })
 
@@ -139,6 +156,14 @@ const CohortsPartialUpdateSchema = () => {
     return CohortsPartialUpdateParams.omit({ project_id: true })
         .extend(CohortsPartialUpdateBody.omit({ _create_in_folder: true, _create_static_person_ids: true }).shape)
         .extend({ id: z.preprocess(castStringToInt, CohortsPartialUpdateParams.shape['id']) })
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const cohortsPartialUpdate = (): ToolBase<
@@ -172,12 +197,21 @@ const cohortsPartialUpdate = (): ToolBase<
             if (params.cohort_type !== undefined) {
                 body['cohort_type'] = params.cohort_type
             }
+            const before = params.full
+                ? undefined
+                : await readReceiptPreImage(
+                      context,
+                      `/api/projects/${encodeURIComponent(String(projectId))}/cohorts/${encodeURIComponent(String(params.id))}/`
+                  )
             const result = await context.api.request<Schemas.Cohort>({
                 method: 'PATCH',
                 path: `/api/projects/${encodeURIComponent(String(projectId))}/cohorts/${encodeURIComponent(String(params.id))}/`,
                 body,
             })
-            return await withPostHogUrl(context, result, `/cohorts/${result.id}`)
+            const filtered = (
+                params.full ? result : buildWriteReceipt(result, { fields: [], sent: body, before })
+            ) as typeof result
+            return await withPostHogUrl(context, filtered, `/cohorts/${filtered.id}`)
         },
     })
 

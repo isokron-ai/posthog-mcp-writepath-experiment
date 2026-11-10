@@ -287,6 +287,10 @@
         "form_content": {
             "description": "Optional hosted-form content configuration for external_survey forms. Only include this when the user explicitly asks to customize the hosted form content beyond the standard question flow."
         },
+        "full": {
+            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
+            "type": "boolean"
+        },
         "iteration_count": {
             "anyOf": [
                 {

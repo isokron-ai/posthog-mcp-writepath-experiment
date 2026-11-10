@@ -32,6 +32,12 @@ tools:
             - dashboard_id
             - emoji
             - hidden_in_user_interface
+        response:
+            receipt:
+                fields:
+                    - content
+                    - date_marker
+                    - scope
     annotation-delete:
         operation: annotations_destroy
         enabled: true
@@ -46,6 +52,11 @@ tools:
             Soft-delete an annotation by ID. This hides the annotation from normal lists while preserving historical
             records.
         soft_delete: true
+        response:
+            receipt:
+                fields:
+                    - content
+                    - date_marker
     annotation-retrieve:
         operation: annotations_retrieve
         enabled: true
@@ -114,6 +125,10 @@ tools:
             - dashboard_id
             - emoji
             - hidden_in_user_interface
+        response:
+            receipt:
+                fields:
+                    - content
     change-feed-list:
         operation: change_feed_list
         enabled: true

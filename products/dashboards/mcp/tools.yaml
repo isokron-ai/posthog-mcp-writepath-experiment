@@ -63,6 +63,11 @@ tools:
             - _create_in_folder
             - group_titles
         response:
+            receipt:
+                fields:
+                    - tiles.*.id
+                    - tiles.*.insight.short_id
+                    - tiles.*.insight.name
             exclude:
                 - user_access_level
                 - creation_mode
@@ -174,6 +179,8 @@ tools:
             id:
                 cast: string-int
         soft_delete: true
+        response:
+            receipt: true
     dashboard-delete-tile:
         operation: dashboards_delete_tile
         enabled: true
@@ -350,6 +357,16 @@ tools:
             can overlap the repacked tiles. This tool does not set different sizes or positions for individual tiles.
             After substantial visual changes, check the final saved dashboard once if browser access is already
             available. Skip browser checks for small edits.
+        response:
+            receipt:
+                fields:
+                    - tiles.*.id
+                    - tiles.*.order
+                    - tiles.*.layouts
+                    - tiles.*.insight.id
+                    - tiles.*.insight.short_id
+                    - tiles.*.insight.name
+                    - tiles.*.text.body
     dashboard-templates-list:
         operation: dashboard_templates_list
         enabled: true

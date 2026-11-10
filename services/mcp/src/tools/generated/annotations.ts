@@ -4,12 +4,25 @@ import { z } from 'zod'
 import type { Schemas } from '@/api/generated'
 import * as orvalSchemas from '@/generated/annotations/api'
 import { castStringToInt } from '@/tools/cast-helpers'
-import { withPostHogUrl, omitResponseFields, type WithPostHogUrl } from '@/tools/tool-utils'
+import {
+    withPostHogUrl,
+    buildWriteReceipt,
+    omitResponseFields,
+    readReceiptPreImage,
+    type WithPostHogUrl,
+} from '@/tools/tool-utils'
 import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
 
 const AnnotationCreateSchema = () => {
     const AnnotationsCreateBody = orvalSchemas.AnnotationsCreateBody()
-    return AnnotationsCreateBody.omit({ creation_type: true, deleted: true })
+    return AnnotationsCreateBody.omit({ creation_type: true, deleted: true }).extend({
+        full: z
+            .boolean()
+            .optional()
+            .describe(
+                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+            ),
+    })
 }
 
 const annotationCreate = (): ToolBase<ReturnType<typeof AnnotationCreateSchema>, Schemas.Annotation> => ({
@@ -44,13 +57,23 @@ const annotationCreate = (): ToolBase<ReturnType<typeof AnnotationCreateSchema>,
             path: `/api/projects/${encodeURIComponent(String(projectId))}/annotations/`,
             body,
         })
-        return result
+        const filtered = (
+            params.full ? result : buildWriteReceipt(result, { fields: ['content', 'date_marker', 'scope'] })
+        ) as typeof result
+        return filtered
     },
 })
 
 const AnnotationDeleteSchema = () => {
     const AnnotationsDestroyParams = orvalSchemas.AnnotationsDestroyParams()
-    return AnnotationsDestroyParams.omit({ project_id: true })
+    return AnnotationsDestroyParams.omit({ project_id: true }).extend({
+        full: z
+            .boolean()
+            .optional()
+            .describe(
+                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+            ),
+    })
 }
 
 const annotationDelete = (): ToolBase<ReturnType<typeof AnnotationDeleteSchema>, Schemas.Annotation> => ({
@@ -63,7 +86,10 @@ const annotationDelete = (): ToolBase<ReturnType<typeof AnnotationDeleteSchema>,
             path: `/api/projects/${encodeURIComponent(String(projectId))}/annotations/${encodeURIComponent(String(params.id))}/`,
             body: { deleted: true },
         })
-        return result
+        const filtered = (
+            params.full ? result : buildWriteReceipt(result, { fields: ['content', 'date_marker', 'deleted'] })
+        ) as typeof result
+        return filtered
     },
 })
 
@@ -135,9 +161,16 @@ const annotationsList = (): ToolBase<
 const AnnotationsPartialUpdateSchema = () => {
     const AnnotationsPartialUpdateBody = orvalSchemas.AnnotationsPartialUpdateBody()
     const AnnotationsPartialUpdateParams = orvalSchemas.AnnotationsPartialUpdateParams()
-    return AnnotationsPartialUpdateParams.omit({ project_id: true }).extend(
-        AnnotationsPartialUpdateBody.omit({ creation_type: true, deleted: true }).shape
-    )
+    return AnnotationsPartialUpdateParams.omit({ project_id: true })
+        .extend(AnnotationsPartialUpdateBody.omit({ creation_type: true, deleted: true }).shape)
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const annotationsPartialUpdate = (): ToolBase<
@@ -170,12 +203,21 @@ const annotationsPartialUpdate = (): ToolBase<
         if (params.hidden_in_user_interface !== undefined) {
             body['hidden_in_user_interface'] = params.hidden_in_user_interface
         }
+        const before = params.full
+            ? undefined
+            : await readReceiptPreImage(
+                  context,
+                  `/api/projects/${encodeURIComponent(String(projectId))}/annotations/${encodeURIComponent(String(params.id))}/`
+              )
         const result = await context.api.request<Schemas.Annotation>({
             method: 'PATCH',
             path: `/api/projects/${encodeURIComponent(String(projectId))}/annotations/${encodeURIComponent(String(params.id))}/`,
             body,
         })
-        return result
+        const filtered = (
+            params.full ? result : buildWriteReceipt(result, { fields: ['content'], sent: body, before })
+        ) as typeof result
+        return filtered
     },
 })
 

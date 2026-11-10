@@ -934,9 +934,54 @@ function buildPathExpr(
 // Response filtering templates
 // ------------------------------------------------------------------
 
-type ResponseFilterHelper = 'pickResponseFields' | 'omitResponseFields' | 'stripNullFields'
+type ResponseFilterHelper =
+    | 'pickResponseFields'
+    | 'omitResponseFields'
+    | 'stripNullFields'
+    | 'buildWriteReceipt'
+    | 'readReceiptPreImage'
 
-function buildResponseFilter(config: ToolConfig): {
+/** How a tool with `response.receipt` builds its receipt, resolved from the YAML and the operation. */
+interface ReceiptPlan {
+    /** Extra fields kept beyond the identity fields, the soft-delete field included. */
+    fields: string[]
+    /** Read the object before the write and diff the sent fields against it. */
+    diff: boolean
+    /** Pass the request body so the receipt knows which fields were sent. */
+    hasBody: boolean
+}
+
+const RECEIPT_FULL_PARAM_DESCRIPTION =
+    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+
+/**
+ * Resolves `response.receipt` for one tool. The diff (and the read it needs) applies to updates
+ * only: a PATCH or PUT that sends a body. Creates and actions keep the identity fields and any
+ * listed `fields`; a soft delete also keeps the field it set.
+ */
+function resolveReceiptPlan(
+    config: ToolConfig,
+    httpMethod: string,
+    hasBody: boolean,
+    softDeleteField: string | undefined
+): ReceiptPlan | undefined {
+    const receipt = config.response?.receipt
+    if (!receipt) {
+        return undefined
+    }
+    const options = receipt === true ? {} : receipt
+    const fields = [...(options.fields ?? [])]
+    if (softDeleteField && !fields.includes(softDeleteField)) {
+        fields.push(softDeleteField)
+    }
+    const isUpdate = (httpMethod === 'PATCH' || httpMethod === 'PUT') && hasBody && !softDeleteField
+    return { fields, diff: isUpdate && options.diff !== false, hasBody: isUpdate }
+}
+
+function buildResponseFilter(
+    config: ToolConfig,
+    receipt?: ReceiptPlan
+): {
     code: string
     helperImports: ResponseFilterHelper[]
 } {
@@ -972,6 +1017,24 @@ function buildResponseFilter(config: ToolConfig): {
         const inner = shapeItem
         helperImports.push('stripNullFields')
         shapeItem = (target) => `stripNullFields(${inner(target)})`
+    }
+
+    if (receipt) {
+        // `full: true` keeps the old response, shaped by include/exclude as before.
+        const fullShape = shapeItem('result')
+        const receiptOptions = [
+            `fields: [${receipt.fields.map((f) => `'${f}'`).join(', ')}]`,
+            ...(receipt.hasBody ? ['sent: body'] : []),
+            ...(receipt.diff ? ['before'] : []),
+        ].join(', ')
+        helperImports.push('buildWriteReceipt')
+        if (receipt.diff) {
+            helperImports.push('readReceiptPreImage')
+        }
+        return {
+            code: `        const filtered = (params.full ? ${fullShape} : buildWriteReceipt(result, { ${receiptOptions} })) as typeof result\n`,
+            helperImports,
+        }
     }
 
     if (helperImports.length === 0) {
@@ -1191,6 +1254,12 @@ function generateToolCode(
     if (expandableExtension) {
         schemaExpr = `${schemaExpr}${expandableExtension}`
     }
+    const receiptExtension = config.response?.receipt
+        ? `.extend({ full: z.boolean().optional().describe(${JSON.stringify(RECEIPT_FULL_PARAM_DESCRIPTION)}) })`
+        : ''
+    if (receiptExtension) {
+        schemaExpr = `${schemaExpr}${receiptExtension}`
+    }
     if (config.validators && config.validators.length > 0) {
         for (const fn of config.validators) {
             schemaExpr = `(${schemaExpr}).superRefine(${fn})`
@@ -1280,6 +1349,11 @@ function generateToolCode(
     const transformsBody = hasBody && !!config.hooks
 
     const httpMethod = handlerHttpMethod(config, resolved)
+    const receiptPlan = resolveReceiptPlan(config, httpMethod, hasBody, isSoftDelete ? softDeleteField : undefined)
+    if (receiptPlan?.diff) {
+        // Read before the write, for the receipt's `from` values only; the write is unchanged.
+        handlerBody += `        const before = params.full ? undefined : await readReceiptPreImage(context, ${pathExpr})\n`
+    }
     handlerBody += `        const result = await context.api.request<${responseType ?? 'unknown'}>({\n`
     handlerBody += `            method: '${httpMethod}',\n`
     handlerBody += `            path: ${pathExpr},\n`
@@ -1309,8 +1383,8 @@ function generateToolCode(
     }
     handlerBody += `        })\n`
 
-    // Response filtering — pick/omit fields before enrichment
-    const responseFilter = buildResponseFilter(config)
+    // Response filtering — pick/omit fields (or build the write receipt) before enrichment
+    const responseFilter = buildResponseFilter(config, receiptPlan)
     if (responseFilter.code) {
         // Warn if filtering might break enrich_url — only for response-sourced fields;
         // '{params.x}' fields are read from the request params, so filtering can't break them.
@@ -1373,7 +1447,8 @@ function generateToolCode(
         composition.pathParamNames.length > 0 ||
         enrichUsesParams ||
         !!selectableExtension ||
-        !!expandableExtension
+        !!expandableExtension ||
+        !!receiptExtension
     const paramsName = paramsUsed ? 'params' : '_params'
 
     // When `confirmed_action` is declared, emit TWO factories instead of
@@ -2696,6 +2771,7 @@ ${spreads}
 // Export for testing
 export {
     buildResponseFilter,
+    resolveReceiptPlan,
     composeToolSchema,
     extractPathParams,
     generateCategoryFile,

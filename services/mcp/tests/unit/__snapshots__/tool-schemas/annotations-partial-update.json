@@ -60,6 +60,10 @@
             ],
             "description": "Optional emoji shown in place of the default badge when this annotation is surfaced on a chart."
         },
+        "full": {
+            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
+            "type": "boolean"
+        },
         "hidden_in_user_interface": {
             "anyOf": [
                 {

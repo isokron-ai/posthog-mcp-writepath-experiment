@@ -1,5 +1,7 @@
 import { encode } from '@toon-format/toon'
 
+import { trimUserRefs } from '@/lib/user-refs'
+
 const QUERY_PLACEHOLDER_PREFIX = '__QUERY_PLACEHOLDER_'
 const QUERY_PLACEHOLDER_PATTERN = /__QUERY_PLACEHOLDER_\d+__/g
 
@@ -51,7 +53,8 @@ export function formatResponse(data: any): string {
     }
 
     const placeholderMap = new Map<string, string>()
-    const processed = preprocessKeys(unwrapPaginatedResponse(data), placeholderMap)
+    // Creators and modifiers shrink to `{id, name}` in the text the model reads (see trimUserRefs).
+    const processed = preprocessKeys(trimUserRefs(unwrapPaginatedResponse(data)), placeholderMap)
     const result = encode(processed)
 
     // Use a replacer function so `$&`, `$'` and similar sequences in query JSON stay literal.

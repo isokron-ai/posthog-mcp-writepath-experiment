@@ -88,6 +88,10 @@
         "description": {
             "type": "string"
         },
+        "full": {
+            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
+            "type": "boolean"
+        },
         "grid_spacing": {
             "description": "Named tile density preset. Use tight, condensed, standard, relaxed, or wide.\n\n* `tight` - tight\n* `condensed` - condensed\n* `standard` - standard\n* `relaxed` - relaxed\n* `wide` - wide",
             "enum": ["tight", "condensed", "standard", "relaxed", "wide"],

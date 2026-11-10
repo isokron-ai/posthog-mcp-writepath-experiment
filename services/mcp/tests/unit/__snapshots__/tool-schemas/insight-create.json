@@ -23,6 +23,10 @@
         "favorited": {
             "type": "boolean"
         },
+        "full": {
+            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
+            "type": "boolean"
+        },
         "name": {
             "anyOf": [
                 {

@@ -10,6 +10,7 @@ import {
     withAgentNote,
     omitResponseFields,
     stripNullFields,
+    buildWriteReceipt,
     withInformationalResponse,
     type WithPostHogUrl,
     type WithAgentNote,
@@ -20,7 +21,16 @@ import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
 const DashboardCreateSchema = () => {
     const DashboardsCreateBody = orvalSchemas.DashboardsCreateBody()
     const DashboardsCreateQueryParams = orvalSchemas.DashboardsCreateQueryParams()
-    return DashboardsCreateQueryParams.omit({ format: true }).extend(DashboardsCreateBody.shape)
+    return DashboardsCreateQueryParams.omit({ format: true })
+        .extend(DashboardsCreateBody.shape)
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const dashboardCreate = (): ToolBase<
@@ -82,72 +92,78 @@ const dashboardCreate = (): ToolBase<
                 include_dashboards: params.include_dashboards,
             },
         })
-        const filtered = stripNullFields(
-            omitResponseFields(result, [
-                'user_access_level',
-                'creation_mode',
-                'deleted',
-                'breakdown_colors',
-                'data_color_theme_id',
-                'quick_filter_ids',
-                'tiles.*.color',
-                'tiles.*.transparent_background',
-                'tiles.*.show_description',
-                'tiles.*.button_tile',
-                'tiles.*.insight.result',
-                'tiles.*.insight.hasMore',
-                'tiles.*.insight.columns',
-                'tiles.*.insight.hogql',
-                'tiles.*.insight.types',
-                'tiles.*.insight.query_status',
-                'tiles.*.insight.cache_target_age',
-                'tiles.*.insight.next_allowed_client_refresh',
-                'tiles.*.insight.filters_hash',
-                'tiles.*.insight.dashboards',
-                'tiles.*.insight.dashboard_tiles',
-                'tiles.*.insight.user_access_level',
-                'tiles.*.insight.filters',
-                'tiles.*.insight.is_sample',
-                'tiles.*.insight.saved',
-                'tiles.*.insight.order',
-                'tiles.*.insight.deleted',
-                'tiles.*.insight.alerts',
-                'tiles.*.insight.last_viewed_at',
-                'tiles.*.insight.timezone',
-                'tiles.*.insight.resolved_date_range',
-                'tiles.*.insight.resolved_compare_date_range',
-                'tiles.*.insight.filter_override_context',
-                'created_by.uuid',
-                'created_by.distinct_id',
-                'created_by.is_email_verified',
-                'created_by.hedgehog_config',
-                'tiles.*.insight.created_by.uuid',
-                'tiles.*.insight.created_by.distinct_id',
-                'tiles.*.insight.created_by.is_email_verified',
-                'tiles.*.insight.created_by.hedgehog_config',
-                'tiles.*.insight.last_modified_by.uuid',
-                'tiles.*.insight.last_modified_by.distinct_id',
-                'tiles.*.insight.last_modified_by.is_email_verified',
-                'tiles.*.insight.last_modified_by.hedgehog_config',
-                'tiles.*.text.dashboard_tiles',
-                'tiles.*.text.created_by.uuid',
-                'tiles.*.text.created_by.distinct_id',
-                'tiles.*.text.created_by.is_email_verified',
-                'tiles.*.text.created_by.hedgehog_config',
-                'tiles.*.text.last_modified_by.uuid',
-                'tiles.*.text.last_modified_by.distinct_id',
-                'tiles.*.text.last_modified_by.is_email_verified',
-                'tiles.*.text.last_modified_by.hedgehog_config',
-                'tiles.*.widget.dashboard_tiles',
-                'tiles.*.widget.created_by.uuid',
-                'tiles.*.widget.created_by.distinct_id',
-                'tiles.*.widget.created_by.is_email_verified',
-                'tiles.*.widget.created_by.hedgehog_config',
-                'tiles.*.widget.last_modified_by.uuid',
-                'tiles.*.widget.last_modified_by.distinct_id',
-                'tiles.*.widget.last_modified_by.is_email_verified',
-                'tiles.*.widget.last_modified_by.hedgehog_config',
-            ])
+        const filtered = (
+            params.full
+                ? stripNullFields(
+                      omitResponseFields(result, [
+                          'user_access_level',
+                          'creation_mode',
+                          'deleted',
+                          'breakdown_colors',
+                          'data_color_theme_id',
+                          'quick_filter_ids',
+                          'tiles.*.color',
+                          'tiles.*.transparent_background',
+                          'tiles.*.show_description',
+                          'tiles.*.button_tile',
+                          'tiles.*.insight.result',
+                          'tiles.*.insight.hasMore',
+                          'tiles.*.insight.columns',
+                          'tiles.*.insight.hogql',
+                          'tiles.*.insight.types',
+                          'tiles.*.insight.query_status',
+                          'tiles.*.insight.cache_target_age',
+                          'tiles.*.insight.next_allowed_client_refresh',
+                          'tiles.*.insight.filters_hash',
+                          'tiles.*.insight.dashboards',
+                          'tiles.*.insight.dashboard_tiles',
+                          'tiles.*.insight.user_access_level',
+                          'tiles.*.insight.filters',
+                          'tiles.*.insight.is_sample',
+                          'tiles.*.insight.saved',
+                          'tiles.*.insight.order',
+                          'tiles.*.insight.deleted',
+                          'tiles.*.insight.alerts',
+                          'tiles.*.insight.last_viewed_at',
+                          'tiles.*.insight.timezone',
+                          'tiles.*.insight.resolved_date_range',
+                          'tiles.*.insight.resolved_compare_date_range',
+                          'tiles.*.insight.filter_override_context',
+                          'created_by.uuid',
+                          'created_by.distinct_id',
+                          'created_by.is_email_verified',
+                          'created_by.hedgehog_config',
+                          'tiles.*.insight.created_by.uuid',
+                          'tiles.*.insight.created_by.distinct_id',
+                          'tiles.*.insight.created_by.is_email_verified',
+                          'tiles.*.insight.created_by.hedgehog_config',
+                          'tiles.*.insight.last_modified_by.uuid',
+                          'tiles.*.insight.last_modified_by.distinct_id',
+                          'tiles.*.insight.last_modified_by.is_email_verified',
+                          'tiles.*.insight.last_modified_by.hedgehog_config',
+                          'tiles.*.text.dashboard_tiles',
+                          'tiles.*.text.created_by.uuid',
+                          'tiles.*.text.created_by.distinct_id',
+                          'tiles.*.text.created_by.is_email_verified',
+                          'tiles.*.text.created_by.hedgehog_config',
+                          'tiles.*.text.last_modified_by.uuid',
+                          'tiles.*.text.last_modified_by.distinct_id',
+                          'tiles.*.text.last_modified_by.is_email_verified',
+                          'tiles.*.text.last_modified_by.hedgehog_config',
+                          'tiles.*.widget.dashboard_tiles',
+                          'tiles.*.widget.created_by.uuid',
+                          'tiles.*.widget.created_by.distinct_id',
+                          'tiles.*.widget.created_by.is_email_verified',
+                          'tiles.*.widget.created_by.hedgehog_config',
+                          'tiles.*.widget.last_modified_by.uuid',
+                          'tiles.*.widget.last_modified_by.distinct_id',
+                          'tiles.*.widget.last_modified_by.is_email_verified',
+                          'tiles.*.widget.last_modified_by.hedgehog_config',
+                      ])
+                  )
+                : buildWriteReceipt(result, {
+                      fields: ['tiles.*.id', 'tiles.*.insight.short_id', 'tiles.*.insight.name'],
+                  })
         ) as typeof result
         return withInformationalResponse(
             withAgentNote(
@@ -180,9 +196,18 @@ const dashboardCreateTile = (): ToolBase<ReturnType<typeof DashboardCreateTileSc
 
 const DashboardDeleteSchema = () => {
     const DashboardsDestroyParams = orvalSchemas.DashboardsDestroyParams()
-    return DashboardsDestroyParams.omit({ project_id: true }).extend({
-        id: z.preprocess(castStringToInt, DashboardsDestroyParams.shape['id']),
-    })
+    return DashboardsDestroyParams.omit({ project_id: true })
+        .extend({
+            id: z.preprocess(castStringToInt, DashboardsDestroyParams.shape['id']),
+        })
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const dashboardDelete = (): ToolBase<ReturnType<typeof DashboardDeleteSchema>, Schemas.Dashboard> => ({
@@ -195,7 +220,8 @@ const dashboardDelete = (): ToolBase<ReturnType<typeof DashboardDeleteSchema>, S
             path: `/api/projects/${encodeURIComponent(String(projectId))}/dashboards/${encodeURIComponent(String(params.id))}/`,
             body: { deleted: true },
         })
-        return result
+        const filtered = (params.full ? result : buildWriteReceipt(result, { fields: ['deleted'] })) as typeof result
+        return filtered
     },
 })
 
@@ -411,7 +437,16 @@ const dashboardInsightsRun = (): ToolBase<
 const DashboardReorderTilesSchema = () => {
     const DashboardsReorderTilesCreateBody = orvalSchemas.DashboardsReorderTilesCreateBody()
     const DashboardsReorderTilesCreateParams = orvalSchemas.DashboardsReorderTilesCreateParams()
-    return DashboardsReorderTilesCreateParams.omit({ project_id: true }).extend(DashboardsReorderTilesCreateBody.shape)
+    return DashboardsReorderTilesCreateParams.omit({ project_id: true })
+        .extend(DashboardsReorderTilesCreateBody.shape)
+        .extend({
+            full: z
+                .boolean()
+                .optional()
+                .describe(
+                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
+                ),
+        })
 }
 
 const dashboardReorderTiles = (): ToolBase<
@@ -434,7 +469,22 @@ const dashboardReorderTiles = (): ToolBase<
             path: `/api/projects/${encodeURIComponent(String(projectId))}/dashboards/${encodeURIComponent(String(params.id))}/reorder_tiles/`,
             body,
         })
-        return await withPostHogUrl(context, result, `/dashboard/${result.id}`)
+        const filtered = (
+            params.full
+                ? result
+                : buildWriteReceipt(result, {
+                      fields: [
+                          'tiles.*.id',
+                          'tiles.*.order',
+                          'tiles.*.layouts',
+                          'tiles.*.insight.id',
+                          'tiles.*.insight.short_id',
+                          'tiles.*.insight.name',
+                          'tiles.*.text.body',
+                      ],
+                  })
+        ) as typeof result
+        return await withPostHogUrl(context, filtered, `/dashboard/${filtered.id}`)
     },
 })
 

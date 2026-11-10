@@ -39,6 +39,8 @@ tools:
             name:
                 description: Name of the action (must be unique within the project)
         ui_app: action
+        response:
+            receipt: true
     action-delete:
         operation: actions_destroy
         enabled: true
@@ -53,6 +55,8 @@ tools:
             Delete an action by ID (soft delete - marks as deleted). The action will no longer appear in lists but
             historical data is preserved.
         soft_delete: true
+        response:
+            receipt: true
     action-get:
         operation: actions_retrieve
         enabled: true
@@ -91,6 +95,8 @@ tools:
             - creation_context
             - last_calculated_at
         ui_app: action
+        response:
+            receipt: true
     actions-get-all:
         operation: actions_list
         enabled: true

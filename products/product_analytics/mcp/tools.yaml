@@ -268,6 +268,11 @@ tools:
                 description: |
                     Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.
         response:
+            receipt:
+                fields:
+                    - dashboards
+                    - dashboard_tiles.*.id
+                    - dashboard_tiles.*.dashboard_id
             exclude:
                 - result
                 - hasMore
@@ -296,6 +301,8 @@ tools:
                     - short_id
                     - shortId
         soft_delete: true
+        response:
+            receipt: true
     insight-get:
         operation: insights_retrieve
         enabled: true
@@ -391,6 +398,11 @@ tools:
                 description: |
                     Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.
         response:
+            receipt:
+                fields:
+                    - dashboards
+                    - dashboard_tiles.*.id
+                    - dashboard_tiles.*.dashboard_id
             exclude:
                 - result
                 - hasMore

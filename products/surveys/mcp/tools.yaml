@@ -129,6 +129,14 @@ tools:
                     Optional hosted-form content configuration for external_survey forms. Only include this when the
                     user explicitly asks to customize the hosted form content beyond the standard question flow.
         ui_app: survey
+        response:
+            receipt:
+                fields:
+                    - type
+                    - start_date
+                    - questions.*.id
+                    - questions.*.type
+                    - questions.*.question
     survey-delete:
         operation: surveys_destroy
         enabled: true
@@ -147,6 +155,8 @@ tools:
                     - survey_id
                     - surveyId
         soft_delete: archived
+        response:
+            receipt: true
     survey-get:
         operation: surveys_retrieve
         enabled: true
@@ -329,6 +339,8 @@ tools:
                     Hosted-form content configuration for external_survey forms. Do not provide this field unless
                     editing hosted-form content. Preserve existing content fields that should remain.
         ui_app: survey
+        response:
+            receipt: true
     surveys-get-all:
         operation: surveys_list
         enabled: true
