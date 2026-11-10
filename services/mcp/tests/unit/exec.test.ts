@@ -554,6 +554,41 @@ describe('exec tool', () => {
             )
         })
 
+        it('requires --confirm for destructive tools by default, as over MCP', async () => {
+            const handler = vi.fn(async () => ({ deleted: true }))
+            const destructive = makeMockTool({
+                annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
+                handler,
+            })
+            const exec = createExec([destructive])
+
+            const refusal = exec.handler(mockContext, { command: 'call mock-tool {}' })
+            await expect(refusal).rejects.toBeInstanceOf(ExecCommandError)
+            await expect(exec.handler(mockContext, { command: 'call mock-tool {}' })).rejects.toThrow(
+                /is destructive \(it deletes or overwrites data\), so the call needs --confirm\. Nothing ran\.[\s\S]*call --confirm mock-tool <json_input>/
+            )
+            expect(handler).not.toHaveBeenCalled()
+
+            await exec.handler(mockContext, { command: 'call --confirm mock-tool {}' })
+            expect(handler).toHaveBeenCalledTimes(1)
+        })
+
+        it('runs a destructive tool without --confirm only for a caller that opted out', async () => {
+            const handler = vi.fn(async () => ({ deleted: true }))
+            const destructive = makeMockTool({
+                annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
+                handler,
+            })
+            const exec = createExec([destructive], undefined, { requireDestructiveConfirmation: false })
+            await exec.handler(mockContext, { command: 'call mock-tool {}' })
+            expect(handler).toHaveBeenCalledTimes(1)
+        })
+
+        it('does not ask for --confirm on a tool that is not destructive', async () => {
+            const exec = createExec()
+            await expect(exec.handler(mockContext, { command: 'call mock-tool {}' })).resolves.toContain('id: 1')
+        })
+
         it('keeps UI data in structuredContent (not _meta) when the tool has no formatted table', async () => {
             const tool = makeMockTool({
                 _meta: { ui: { resourceUri: 'ui://posthog/mock-app.html' } },

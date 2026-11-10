@@ -263,6 +263,11 @@ export function classifyLearnCommand(
 }
 
 export interface ExecToolOptions {
+    /**
+     * Refuse a `call` to a tool annotated destructive unless it carries `--confirm`.
+     * On by default, over MCP as well as in the agent CLI, as the command reference says;
+     * pass false only for a caller that confirms destructive calls some other way.
+     */
     requireDestructiveConfirmation?: boolean
     learnCatalog?: ExecLearnCatalog
     /**
@@ -1824,6 +1829,7 @@ export function createExecTool(
 ): Tool<ExecSchema> {
     const ExecSchema = makeExecSchema(commandReference)
     const flagGatedTools = options.flagGatedTools ?? []
+    const requireDestructiveConfirmation = options.requireDestructiveConfirmation ?? true
 
     return {
         name: 'exec',
@@ -2196,9 +2202,9 @@ export function createExecTool(
                         isNotGranted,
                         options.oauthClientId
                     )
-                    if (options.requireDestructiveConfirmation && tool.annotations.destructiveHint && !confirmed) {
+                    if (requireDestructiveConfirmation && tool.annotations?.destructiveHint && !confirmed) {
                         throw new ExecCommandError(
-                            `Tool "${tool.name}" is destructive. Re-run with "call --confirm ${tool.name} ..." after verifying the target IDs. Use "info ${tool.name}" to inspect the tool first.`,
+                            `Tool "${tool.name}" is destructive (it deletes or overwrites data), so the call needs --confirm. Nothing ran. Check the target IDs with the user's request, then re-run it as "call --confirm ${tool.name} <json_input>".`,
                             'needs_confirmation'
                         )
                     }

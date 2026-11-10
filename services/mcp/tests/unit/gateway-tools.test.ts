@@ -204,7 +204,14 @@ describe('gateway tools', () => {
         const found = await exec.handler(mockContext(), { command: 'search create issue' })
         expect(found).toContain('linear__create_issue')
 
-        await exec.handler(mockContext(), { command: 'call linear__create_issue {"title":"Bug"}' })
+        // A connected tool that does not declare itself non-destructive counts as destructive
+        // (the MCP default), so it needs --confirm like a catalog tool.
+        await expect(
+            exec.handler(mockContext(), { command: 'call linear__create_issue {"title":"Bug"}' })
+        ).rejects.toThrow(/needs --confirm/)
+        expect(handler).not.toHaveBeenCalled()
+
+        await exec.handler(mockContext(), { command: 'call --confirm linear__create_issue {"title":"Bug"}' })
         expect(handler).toHaveBeenCalledWith(expect.anything(), { title: 'Bug' })
     })
 
