@@ -36,7 +36,7 @@ import {
     summarizeSchema,
 } from './schema-utils'
 import { type BuiltInSkillHint, formatSkillLookupMiss, type SkillLookupMissKind } from './skills/notFound'
-import { isRegexPattern, searchToolsRanked, searchToolsRegex } from './tool-search'
+import { closestToolNames, isRegexPattern, resolveToolAlias, searchToolsRanked, searchToolsRegex } from './tool-search'
 import { getToolDefinitions, type FlagGatedTool, type ScopeGatedTool } from './toolDefinitions'
 import {
     POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY,
@@ -1809,12 +1809,30 @@ function findTool(
                 'tool_not_granted'
             )
         }
-        throw new ExecCommandError(
-            `Unknown tool: "${name}". Run "search ${name}" to find the current tool name before claiming the capability is unavailable.`,
-            'unknown_tool'
-        )
+        // A guessed ordering or plural of a real name (`feature-flag-create`) runs the real
+        // tool. Resolved against every name this connection knows, so an alias of a gated or
+        // scope-hidden tool gets that tool's own refusal rather than an unknown-tool error.
+        const knownNames = [...tools, ...scopeGatedTools, ...flagGatedTools]
+        const canonical = resolveToolAlias(knownNames, name)
+        if (canonical !== undefined && canonical !== name) {
+            return findTool(tools, scopeGatedTools, flagGatedTools, canonical, context, isNotGranted, oauthClientId)
+        }
+        throw new ExecCommandError(unknownToolMessage(name, tools), 'unknown_tool')
     }
     return tool
+}
+
+/** Names the closest real tools, as the instructions promise, so most misses are fixed
+ *  without a `search` round trip. */
+function unknownToolMessage(name: string, tools: Tool<ZodObjectAny>[]): string {
+    const closest = closestToolNames(
+        name,
+        tools.map((tool) => tool.name)
+    )
+    const suggestion = closest.length
+        ? ` Closest tool names: ${closest.map((candidate) => `"${candidate}"`).join(', ')}.`
+        : ''
+    return `Unknown tool: "${name}".${suggestion} If none of these fits, run "search ${name}" to find the current tool name before claiming the capability is unavailable.`
 }
 
 export function createExecTool(

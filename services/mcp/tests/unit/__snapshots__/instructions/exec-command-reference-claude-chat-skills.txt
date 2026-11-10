@@ -128,7 +128,7 @@ WRONG: Confirm the event with `call read-data-schema {"query":{"kind":"events"}}
 **Handling errors:**
 
 - If a tool call fails, the error includes a suggestion and similar tool names. Read the suggestion before retrying.
-- If a tool name doesn't exist, run `tools` again to find the correct name.
+- If a tool name doesn't exist, the error lists the closest real names. Common alternate orderings and plurals (feature-flag-create for create-feature-flag) already resolve to the real tool.
 - If no tool covers a PostHog capability the user asks about, don't conclude it doesn't exist — PostHog ships changes daily. Check what's new with `call docs-search <json_input>` or the changelog (https://posthog.com/changelog.md).
 
 ### Basic functionality
@@ -168,7 +168,7 @@ PostHog tools have lowercase kebab-case naming. Tools are organized by category:
 
 business-knowledge-documents|dashboard|docs-search|execute-sql|feature-flag|project|query
 Typical action names: list/retrieve/get/create/update/delete/query.
-Example tool names: execute-sql, experiment-create, feature-flag-get-all.
+Names do not follow one order, so copy them from `search`. Most are noun-first (experiment-create, insight-update, feature-flag-get-all, actions-get-all), some are verb-first (create-feature-flag, update-feature-flag, delete-feature-flag), and list tools end in -list or -get-all. A guessed ordering or plural of a real name (feature-flag-create, action-get-all) resolves to the real tool.
 
 ### Active environment
 
