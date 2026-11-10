@@ -82,6 +82,19 @@ describe('outbound 429 handling', () => {
             expect(error.retryAfterSeconds).toBeNull()
             expect(error.message).not.toContain('Retry after')
         })
+
+        it('names the request path without the upstream host', () => {
+            const error = new PostHogRateLimitError({
+                body: '{}',
+                url: 'https://internal.example.com/api/environments/2/query/?refresh=true',
+                method: 'POST',
+                retryAfterSeconds: null,
+            })
+
+            expect(error.message).toBe(
+                'PostHog API rate limit exceeded (429) on POST /api/environments/2/query/?refresh=true.'
+            )
+        })
     })
 
     describe('ApiClient on 429', () => {

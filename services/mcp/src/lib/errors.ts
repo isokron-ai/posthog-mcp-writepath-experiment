@@ -309,7 +309,7 @@ export class PostHogRateLimitError extends PostHogApiError {
             url: options.url,
             method: options.method,
             retryAfterSeconds: options.retryAfterSeconds,
-            message: `PostHog API rate limit exceeded (429) on ${options.method} ${options.url}.${retryHint}`,
+            message: `PostHog API rate limit exceeded (429) on ${options.method} ${requestPath(options.url)}.${retryHint}`,
         })
         this.name = 'PostHogRateLimitError'
     }
@@ -436,7 +436,7 @@ export function wrapError(message: string, cause: unknown): Error {
 const PERSONAL_API_KEY_DOCS_URL = 'https://posthog.com/docs/api#how-to-authenticate-with-the-posthog-api'
 
 export function formatPermissionErrorMessage(error: PostHogPermissionError): string {
-    const callTarget = error.method && error.url ? `${error.method} ${error.url}` : 'this MCP request'
+    const callTarget = error.method && error.url ? `${error.method} ${requestPath(error.url)}` : 'this MCP request'
     if (error.missingScope) {
         return [
             `Missing PostHog API scope: '${error.missingScope}'`,

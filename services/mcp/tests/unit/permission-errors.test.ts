@@ -69,7 +69,29 @@ describe('formatPermissionErrorMessage', () => {
 
         expect(text).toContain("'user:read'")
         expect(text).toContain('MCP Server')
-        expect(text).toContain('GET https://us.posthog.com/api/users/@me/')
+        expect(text).toContain('GET /api/users/@me/')
+    })
+
+    // The API host is the upstream the server talks to, which can be an internal address.
+    // An agent cannot act on it, and the default error message already leaves it out.
+    it.each([
+        ['a missing scope', { detail: "API key missing required scope 'user:read'", missingScope: 'user:read' }],
+        [
+            'a project-scoped token on an organization endpoint',
+            { detail: 'API keys with scoped projects are only supported on project-based endpoints.' },
+        ],
+        ['a generic denial', { detail: 'team access denied' }],
+    ])('names the request path without the upstream host for %s', (_label, options) => {
+        const error = new PostHogPermissionError({
+            ...options,
+            url: 'https://internal.example.com/api/projects/2/insights/?limit=1',
+            method: 'GET',
+        })
+
+        const text = formatPermissionErrorMessage(error)
+
+        expect(text).toContain('GET /api/projects/2/insights/?limit=1')
+        expect(text).not.toContain('internal.example.com')
     })
 
     it('falls back to generic remediation when no scope is parsed', () => {
