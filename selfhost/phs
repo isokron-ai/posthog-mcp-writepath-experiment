@@ -1,0 +1,8 @@
+#!/bin/bash
+# docker compose for the IsoKron local PostHog (hobby files + docker-compose.localhost.yml), fixed project name.
+# usage: ./phs up -d | ps | logs web | stop | ...      (never `down -v`: that deletes the instance's data volumes)
+set -euo pipefail
+cd "$(dirname "$0")"
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+exec docker compose -p isokron-posthog-selfhost --env-file .secrets/instance.env \
+  -f docker-compose.yml -f docker-compose.localhost.yml "$@"

@@ -1,0 +1,11 @@
+# written by setup.sh or at run time; never committed
+.secrets/
+posthog/
+docker-compose.yml
+docker-compose.base.yml
+.env.services
+.env
+docker/
+products/
+share/
+logs/

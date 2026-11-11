@@ -1,0 +1,149 @@
+# IsoKron local adaptation of PostHog's official hobby deployment (docker-compose.yml + docker-compose.base.yml, copied
+# verbatim from PostHog/posthog at 7b516983bef16b9692a00a6b7780a6b5a802257c). Applied on top with -f; see ./phs.
+#
+# What changes, and why:
+#  * Loopback only, no domain, no TLS: Caddy (the hobby proxy) listens on plain HTTP and is published on 127.0.0.1:8010
+#    only; SITE_URL is http://127.0.0.1:8010; secure cookies off (the site is plain HTTP on loopback).
+#  * No outbound network from the PostHog containers: the stack's default network is `internal` (Docker gives it no
+#    route out). Only the proxy is also attached to a second, normal network, because Docker can publish ports only from
+#    a non-internal network. So instance telemetry, update checks, crash reports etc. cannot leave the machine even
+#    where no setting exists. Settings are switched off as well where PostHog or a component offers one (OPT_OUT_CAPTURE,
+#    Redpanda metrics reporter, ClickHouse crash reports).
+#  * The other host ports the hobby file publishes (object storage 19000, SeaweedFS 8333/9333, Temporal 7233, Temporal
+#    UI 8081) are removed: nothing outside the stack needs them.
+#  * Every image is pinned by digest (IMAGES.lock lists tag, digest and source revision). The web/worker image is the
+#    exact pin. The node image (plugins, ingestion, recording-api) is the newest ghcr build at or before the pin
+#    (44b657a8; nodejs/ and common/ are unchanged between it and the pin); the hobby file itself would pull Docker Hub
+#    posthog/posthog-node:latest, which was last pushed 2026-03-31. The Rust images are the ghcr builds of 407c0083 or
+#    5078e083 (rust/ is unchanged between 407c0083 and the pin).
+name: isokron-posthog-selfhost
+
+# DELIBERATE DEVIATION from the stock hobby file (owner decision 2026-11-10): HogQL `system.*` tables (Postgres-backed,
+# e.g. system.insights) need ClickHouse's postgresql() link to the app database. The hobby file does not set it, so on
+# stock hobby every such query fails ("CLICKHOUSE_HOGQL_RDSPROXY env vars missing"), while on Cloud it answers. Pointing
+# it at this stack's own Postgres (db:5432, the hobby's fixed posthog/posthog credentials, already in docker-compose.base.yml)
+# makes the instance behave like Cloud here, for both MCP builds equally.
+x-local-site: &local-site
+    CLICKHOUSE_HOGQL_RDSPROXY_READ_HOST: db
+    CLICKHOUSE_HOGQL_RDSPROXY_READ_PORT: '5432'
+    CLICKHOUSE_HOGQL_RDSPROXY_READ_DATABASE: posthog
+    CLICKHOUSE_HOGQL_RDSPROXY_READ_USER: posthog
+    CLICKHOUSE_HOGQL_RDSPROXY_READ_PASSWORD: posthog
+    SITE_URL: http://127.0.0.1:8010
+    OBJECT_STORAGE_PUBLIC_ENDPOINT: http://127.0.0.1:8010
+    OPT_OUT_CAPTURE: 'true'
+    SECURE_COOKIES: 'false'
+    DISABLE_SECURE_SSL_REDIRECT: 'true'
+
+x-web-image: &web-image posthog/posthog@sha256:17c7900b4fb29c974e4db466189e3d7bf0f715b53bee49ebc8a98a364e857d57
+x-node-image: &node-image ghcr.io/posthog/posthog-node@sha256:c84e844f2c8d43d147f84ad3153746497e3a5ea9fcfe5368400ce7af7cdf0928
+
+networks:
+    default:
+        internal: true
+    edge: {}
+
+services:
+    proxy:
+        image: caddy:2.10.2-alpine
+        ports: !override
+            - '127.0.0.1:8010:80'
+        environment:
+            CADDY_TLS_BLOCK: 'auto_https off'
+            CADDY_HOST: 'http://'
+        networks: [default, edge]
+
+    web:
+        image: *web-image
+        environment:
+            <<: *local-site
+            LIVESTREAM_HOST: 'http://127.0.0.1:8010/livestream'
+    worker:
+        image: *web-image
+        environment: *local-site
+    temporal-django-worker:
+        image: *web-image
+        environment: *local-site
+    asyncmigrationscheck:
+        image: *web-image
+        environment: *local-site
+
+    # plugins (CDP) and ingestion-error-tracking exit at start with "PersonHog client is required" unless they get the same
+    # PersonHog settings the hobby file already gives ingestion-general. With those, ingestion-error-tracking runs; plugins
+    # then stops on "CYCLOTRON_NODE_DATABASE_URL is required" (the hobby file at this pin does not configure the CDP
+    # Cyclotron workers). plugins (CDP destinations, webhooks, hog functions) is not used by any benchmark task, so it is
+    # not started (profile `cdp`), rather than configured beyond what the hobby file does.
+    plugins:
+        profiles: ['cdp']
+        image: *node-image
+        environment:
+            SITE_URL: http://127.0.0.1:8010
+            OBJECT_STORAGE_PUBLIC_ENDPOINT: http://127.0.0.1:8010
+            PERSONHOG_ADDR: 'personhog-router:50052'
+            PERSONHOG_ENABLED: 'true'
+    ingestion-general: { image: *node-image }
+    ingestion-sessionreplay: { image: *node-image }
+    recording-api: { image: *node-image }
+    ingestion-error-tracking:
+        image: *node-image
+        environment: { PERSONHOG_ADDR: 'personhog-router:50052', PERSONHOG_ENABLED: 'true' }
+    ingestion-logs: { image: *node-image }
+    ingestion-traces: { image: *node-image }
+
+    clickhouse:
+        image: ghcr.io/posthog/clickhouse-posthog@sha256:34f131fcbaa38d5e2ff86f40408aeed99b07716f6a0f3a01f81fdbfe486791e0
+        volumes:
+            - ./local/clickhouse-no-crash-reports.xml:/etc/clickhouse-server/config.d/zz-isokron-no-crash-reports.xml:ro
+
+    kafka:
+        command: !override
+            - redpanda
+            - start
+            - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+            - --advertise-kafka-addr internal://kafka:9092,external://localhost:19092
+            - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+            - --advertise-pandaproxy-addr internal://kafka:8082,external://localhost:18082
+            - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+            - --rpc-addr kafka:33145
+            - --advertise-rpc-addr kafka:33145
+            - --mode dev-container
+            - --smp 1
+            - --memory 3G
+            - --reserve-memory 500M
+            - --overprovisioned
+            - --set redpanda.empty_seed_starts_cluster=false
+            - --seeds kafka:33145
+            - --set redpanda.auto_create_topics_enabled=true
+            - --set redpanda.enable_metrics_reporter=false
+
+    # SeaweedFS 4.29 has a usage-telemetry reporter (off by default in this version); switched off explicitly.
+    objectstorage:
+        ports: !reset []
+        command: !override ['server', '-master.port=19001', '-s3', '-s3.port=19000', '-dir=/data', '-volume.max=1000', '-master.volumePreallocate=false', '-master.telemetry=false']
+    seaweedfs:
+        ports: !reset []
+        command: !override ['server', '-s3', '-s3.port=8333', '-dir=/data', '-volume.max=1000', '-master.telemetry=false']
+    temporal:
+        ports: !reset []
+    temporal-ui:
+        ports: !reset []
+
+    capture: { image: ghcr.io/posthog/posthog/capture@sha256:9f43c076d86c283c8bdda1d4474d7516b79c837daa7b26a4873a01e35ff87e58 }
+    capture-ai: { image: ghcr.io/posthog/posthog/capture@sha256:9f43c076d86c283c8bdda1d4474d7516b79c837daa7b26a4873a01e35ff87e58 }
+    replay-capture: { image: ghcr.io/posthog/posthog/capture@sha256:9f43c076d86c283c8bdda1d4474d7516b79c837daa7b26a4873a01e35ff87e58 }
+    capture-logs: { image: ghcr.io/posthog/posthog/capture-logs@sha256:15f71270f5077de468cc55fdf49b00982a94da8e03f2c04c705ca0311d83d345 }
+    property-defs-rs: { image: ghcr.io/posthog/posthog/property-defs-rs@sha256:88d6a1e437ec2df3633626ca0eb8b8ffbb7853d6ea9f5942c1bdac5be42c3806 }
+    property-defs-ai: { image: ghcr.io/posthog/posthog/property-defs-rs@sha256:88d6a1e437ec2df3633626ca0eb8b8ffbb7853d6ea9f5942c1bdac5be42c3806 }
+    feature-flags: { image: ghcr.io/posthog/posthog/feature-flags@sha256:0092ae01e373683a5e164a5d3e6514bcfcf8a7d7d0f20c718d17c478328fb70d }
+    hypercache-server: { image: ghcr.io/posthog/posthog/hypercache-server@sha256:319d7eb8b8145b95bb0fa140d96e44002da841572806260f09f67edef0555479 }
+    livestream: { image: ghcr.io/posthog/posthog/livestream@sha256:acb9d4a84859498239e31f35c09d4013fa52bda3167be21d4b8acd3bfed82927 }
+    personhog-replica: { image: ghcr.io/posthog/posthog/personhog-replica@sha256:741e0ef51331017b898f6217de000fc7ace43d45931e21a770dd6ab81cb2fa24 }
+    personhog-router: { image: ghcr.io/posthog/posthog/personhog-router@sha256:8efa4c4d0ad4a392e28d35d60c3e7883cd19725ec275c8ed3458f2e0fe32db63 }
+    personhog-router-leader: { image: ghcr.io/posthog/posthog/personhog-router@sha256:8efa4c4d0ad4a392e28d35d60c3e7883cd19725ec275c8ed3458f2e0fe32db63 }
+    personhog-leader: { image: ghcr.io/posthog/posthog/personhog-leader@sha256:a10fb174832d8da0a8145e49b49e3ed4f040686d8801e670deeed471c73c06f4 }
+    personhog-writer: { image: ghcr.io/posthog/posthog/personhog-writer@sha256:14bef13d1a6e63ccc9fe7880f5095af4bd69dd53f99c32afdb10afc6fd15a2c7 }
+    personhog-identity: { image: ghcr.io/posthog/posthog/personhog-identity@sha256:83b75a1938d6f9ac8f3bbdf8071b7af0fd7fa880662357d0b3820f75179fbfc0 }
+    personhog-publisher: { image: ghcr.io/posthog/posthog/personhog-publisher@sha256:055ac9d996a2391e2e2de13abaef806a9c17c92733c6b62d72184d006af6b507 }
+    personhog-changelog-relay: { image: ghcr.io/posthog/posthog/personhog-changelog-relay@sha256:a50054985396f097275633100c5ec7c42ef12ec135afbd7037d0d4aba53a6ada }
+    cymbal: { image: ghcr.io/posthog/posthog/cymbal@sha256:818a5a0eee66a02cec25165087fbe7718d55803daf2ae80f1d69211993d4e763 }
+    cymbal-resolution: { image: ghcr.io/posthog/posthog/cymbal@sha256:818a5a0eee66a02cec25165087fbe7718d55803daf2ae80f1d69211993d4e763 }

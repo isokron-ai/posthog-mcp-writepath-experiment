@@ -1,0 +1,6 @@
+<clickhouse>
+    <!-- IsoKron local instance: never send crash reports (ClickHouse would post them to its own Sentry endpoint). -->
+    <send_crash_reports>
+        <enabled>false</enabled>
+    </send_crash_reports>
+</clickhouse>
