@@ -1,0 +1,122 @@
+{
+  "build": "fixed",
+  "built_at": "2026-11-10T17:49:52Z",
+  "entry": "hono-server.mjs",
+  "entry_bytes": 13474413,
+  "entry_sha256": "cf5053c3409b2ad5b90c2c73189cc88496054cf6e95f6aa029353f239e75d4a1",
+  "node": "v25.8.1",
+  "note": "UI apps (public/ui-apps) are not built: they are static assets for clients that render MCP Apps and are not used by the benchmark.",
+  "patches": [
+    {
+      "applied_relative_to": "root",
+      "commit": "19feec97ca193bda20c707fca9dc71292b27763e",
+      "file": "PR131514-0001-fix-mcp-stop-coercing-booleans-and-nullable-integers.patch",
+      "sha256": "2bc57bc00f30902563029c6b1d7920162da1cdbeb5e2aa2fe4954b877b0658c0",
+      "subject": "fix(mcp): stop coercing booleans and nullable integers in generated schemas"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "af1dd74deb146894ff0ac234baaf6151f26b5a0d",
+      "file": "PR131514-0002-chore-mcp-regenerate-tool-schemas.patch",
+      "sha256": "600bfdcf8b7a15da33e3d44b060917a52233ecda5387dbe6dff1e17848af3013",
+      "subject": "chore(mcp): regenerate tool schemas"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "246a74da2898777ec726758b6172a35f9d7f9963",
+      "file": "V1-0001-fix-mcp-accept-real-comment-ids-in-tasks-comments-re.patch",
+      "sha256": "9dc14b6b07441cc6ecb092428b6bf337cdb73538cda8b14725aaeeb5da085795",
+      "subject": "fix(mcp): accept real comment ids in tasks-comments-retrieve"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "6929daf9332a1006d00980be49006feb1925149c",
+      "file": "V6-0001-fix-mcp-keep-the-next-page-hint-on-exec-text-results.patch",
+      "sha256": "5c221d743cfdf0e049d79219d5fc54c2d64c67c22bb4f009c3439386ff3c65a0",
+      "subject": "fix(mcp): keep the next-page hint on exec text results"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "6f77804fab65ed0a05bb71419a86b2f13d60f4e2",
+      "file": "V5-0001-fix-mcp-apply-the-project-test-account-default-to-ac.patch",
+      "sha256": "b329cbe716dd9f7da530743be3e4b83fcf6ac5d0041d0716453adaf1b64bf49f",
+      "subject": "fix(mcp): apply the project test-account default to actors queries"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "bb46039d9fda343fc5bb4d38600ac2a1d1b8ab30",
+      "file": "X3-0001-fix-mcp-reject-a-non-object-exec-call-body-with-a-ty.patch",
+      "sha256": "e4b5c88db1f8bd03433c0d9181df0b7be55f2a71fd9e243c3c174dc0a1db55fb",
+      "subject": "fix(mcp): reject a non-object exec call body with a typed error"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "05e005573b0fffd050f5b919660ed2c8ebb40134",
+      "file": "X2-0001-fix-mcp-accept-any-whitespace-between-exec-command-p.patch",
+      "sha256": "ffea51c798e77f447e8b323b7396fc67354c5b94ebb1d3a073dd619ddb8c3a60",
+      "subject": "fix(mcp): accept any whitespace between exec command parts"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "685efb8f2ac866ccde3095e546fc2db97c182cf0",
+      "file": "X4-0001-fix-mcp-read-flags-and-extra-input-after-the-tool-na.patch",
+      "sha256": "42467fd85d406ec10a872455b2dfe30c19caedb83dac8efc52013fdd30a3aea6",
+      "subject": "fix(mcp): read flags and extra input after the tool name in exec info"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "8bf0eeba30861b51fee411e2360c08483bdfb0bf",
+      "file": "Q5-0001-fix-mcp-keep-search-notes-when-a-scope-gated-tool-al.patch",
+      "sha256": "38b85f959d81f80e5d2a7fbf104e8a624bded9e11a0e86699c0a8848543c3733",
+      "subject": "fix(mcp): keep search notes when a scope-gated tool also matches"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "a9f555d3cfe2ef8a944ab4d73ec9f50e6f8414bf",
+      "file": "K1-0001-fix-mcp-match-search-keywords-in-hosted-exec-search.patch",
+      "sha256": "a39d4e025d7a1a9e9c8eefbd9dd59826ffdcfe07d881e2696b210f1bc15b6472",
+      "subject": "fix(mcp): match search keywords in hosted exec search"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "d2cd32e1c175e77c0b0159ac90b34dc127873372",
+      "file": "P4-0001-fix-mcp-stop-hinting-at-tools-gated-on-server-minted.patch",
+      "sha256": "b75934558ee05a7814cb66efd016f93c594eb8b70e8d2ef262111f69f37dfc33",
+      "subject": "fix(mcp): stop hinting at tools gated on server-minted scopes"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "9ffa6101cf6d8300144c47f09fba0ae405b00da2",
+      "file": "R3-0001-fix-mcp-leave-the-api-host-out-of-403-and-429-error-.patch",
+      "sha256": "3b278eea144d8085f9f4f6d8d9d08df6b40708c3f6e520a81a3c534cd291808e",
+      "subject": "fix(mcp): leave the api host out of 403 and 429 error messages"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "771ae9fdc8754ae68dc1713cc26b853184011ab1",
+      "file": "V2-0001-fix-mcp-trim-the-user-settings-update-response-like-.patch",
+      "sha256": "1dbddc0ab3f728c28b1c331bbc3066dc132c44c56d8ca69787ed532b427a6f06",
+      "subject": "fix(mcp): trim the user-settings-update response like user-get"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "f6bd028c49114e287181f8e4189dd2d3df2892e5",
+      "file": "J1-0001-fix-mcp-stop-returning-an-unreadable-2xx-body-as-a-t.patch",
+      "sha256": "5be06583c41732f1921dfb06a6109589a68eb214ae506cba61b48d2a29d3bf34",
+      "subject": "fix(mcp): stop returning an unreadable 2xx body as a tool result"
+    }
+  ],
+  "patches_not_applied": [
+    {
+      "file": "K3-0001-fix-error-tracking-point-the-suppression-skill-at-th.patch",
+      "reason": "error: products/error_tracking/skills/suppressing-noisy-errors/SKILL.md: No such file or directory ",
+      "sha256": "67594a44c185195110369326f1eab0df2f03d39b44b40181c2e152e175201637"
+    }
+  ],
+  "pnpm": "11.28.5",
+  "posthog_repo": "PostHog/posthog",
+  "posthog_sha": "7b516983bef16b9692a00a6b7780a6b5a802257c",
+  "server_dir": "services/mcp",
+  "source_tree_files": 1032,
+  "source_tree_sha256": "1657a1caae5ebfbaea3818022adfbf9cae874116a6f37e692c05c5a432b16eeb"
+}

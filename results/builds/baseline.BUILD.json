@@ -1,0 +1,17 @@
+{
+  "build": "baseline",
+  "built_at": "2026-11-10T17:48:41Z",
+  "entry": "hono-server.mjs",
+  "entry_bytes": 13470799,
+  "entry_sha256": "d573fa771cd73130cbdf30de29e73edc592992be2b3588af5c2ee87c1729d55b",
+  "node": "v25.8.1",
+  "note": "UI apps (public/ui-apps) are not built: they are static assets for clients that render MCP Apps and are not used by the benchmark.",
+  "patches": [],
+  "patches_not_applied": [],
+  "pnpm": "11.28.5",
+  "posthog_repo": "PostHog/posthog",
+  "posthog_sha": "7b516983bef16b9692a00a6b7780a6b5a802257c",
+  "server_dir": "services/mcp",
+  "source_tree_files": 1032,
+  "source_tree_sha256": "d3394a63372b79376024b2538084ab8bd28b65a11c00a7581f820e32bbe7d8fe"
+}

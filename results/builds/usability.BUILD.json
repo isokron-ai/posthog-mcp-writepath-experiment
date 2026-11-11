@@ -1,0 +1,277 @@
+{
+  "build": "usability",
+  "built_at": "2026-11-10T21:45:57Z",
+  "entry": "hono-server.mjs",
+  "entry_bytes": 13623607,
+  "entry_sha256": "57a1a7b97ef827a88e40979e65c3a226f2820b6b4fb2a0f691539105c9d475e0",
+  "node": "v25.8.1",
+  "note": "UI apps (public/ui-apps) are not built: they are static assets for clients that render MCP Apps and are not used by the benchmark.",
+  "patch_series": {
+    "bugfix": "patches/ in patches/SERIES order (exactly what build/build.sh fixed applies)",
+    "usability": "patches-usability/ in patches-usability/SERIES order (git format-patch iso/fixed-base..iso/usability-all)"
+  },
+  "patches": [
+    {
+      "applied_relative_to": "root",
+      "commit": "19feec97ca193bda20c707fca9dc71292b27763e",
+      "file": "PR131514-0001-fix-mcp-stop-coercing-booleans-and-nullable-integers.patch",
+      "series": "bugfix",
+      "sha256": "2bc57bc00f30902563029c6b1d7920162da1cdbeb5e2aa2fe4954b877b0658c0",
+      "subject": "fix(mcp): stop coercing booleans and nullable integers in generated schemas"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "af1dd74deb146894ff0ac234baaf6151f26b5a0d",
+      "file": "PR131514-0002-chore-mcp-regenerate-tool-schemas.patch",
+      "series": "bugfix",
+      "sha256": "600bfdcf8b7a15da33e3d44b060917a52233ecda5387dbe6dff1e17848af3013",
+      "subject": "chore(mcp): regenerate tool schemas"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "246a74da2898777ec726758b6172a35f9d7f9963",
+      "file": "V1-0001-fix-mcp-accept-real-comment-ids-in-tasks-comments-re.patch",
+      "series": "bugfix",
+      "sha256": "9dc14b6b07441cc6ecb092428b6bf337cdb73538cda8b14725aaeeb5da085795",
+      "subject": "fix(mcp): accept real comment ids in tasks-comments-retrieve"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "6929daf9332a1006d00980be49006feb1925149c",
+      "file": "V6-0001-fix-mcp-keep-the-next-page-hint-on-exec-text-results.patch",
+      "series": "bugfix",
+      "sha256": "5c221d743cfdf0e049d79219d5fc54c2d64c67c22bb4f009c3439386ff3c65a0",
+      "subject": "fix(mcp): keep the next-page hint on exec text results"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "6f77804fab65ed0a05bb71419a86b2f13d60f4e2",
+      "file": "V5-0001-fix-mcp-apply-the-project-test-account-default-to-ac.patch",
+      "series": "bugfix",
+      "sha256": "b329cbe716dd9f7da530743be3e4b83fcf6ac5d0041d0716453adaf1b64bf49f",
+      "subject": "fix(mcp): apply the project test-account default to actors queries"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "bb46039d9fda343fc5bb4d38600ac2a1d1b8ab30",
+      "file": "X3-0001-fix-mcp-reject-a-non-object-exec-call-body-with-a-ty.patch",
+      "series": "bugfix",
+      "sha256": "e4b5c88db1f8bd03433c0d9181df0b7be55f2a71fd9e243c3c174dc0a1db55fb",
+      "subject": "fix(mcp): reject a non-object exec call body with a typed error"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "05e005573b0fffd050f5b919660ed2c8ebb40134",
+      "file": "X2-0001-fix-mcp-accept-any-whitespace-between-exec-command-p.patch",
+      "series": "bugfix",
+      "sha256": "ffea51c798e77f447e8b323b7396fc67354c5b94ebb1d3a073dd619ddb8c3a60",
+      "subject": "fix(mcp): accept any whitespace between exec command parts"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "685efb8f2ac866ccde3095e546fc2db97c182cf0",
+      "file": "X4-0001-fix-mcp-read-flags-and-extra-input-after-the-tool-na.patch",
+      "series": "bugfix",
+      "sha256": "42467fd85d406ec10a872455b2dfe30c19caedb83dac8efc52013fdd30a3aea6",
+      "subject": "fix(mcp): read flags and extra input after the tool name in exec info"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "8bf0eeba30861b51fee411e2360c08483bdfb0bf",
+      "file": "Q5-0001-fix-mcp-keep-search-notes-when-a-scope-gated-tool-al.patch",
+      "series": "bugfix",
+      "sha256": "38b85f959d81f80e5d2a7fbf104e8a624bded9e11a0e86699c0a8848543c3733",
+      "subject": "fix(mcp): keep search notes when a scope-gated tool also matches"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "a9f555d3cfe2ef8a944ab4d73ec9f50e6f8414bf",
+      "file": "K1-0001-fix-mcp-match-search-keywords-in-hosted-exec-search.patch",
+      "series": "bugfix",
+      "sha256": "a39d4e025d7a1a9e9c8eefbd9dd59826ffdcfe07d881e2696b210f1bc15b6472",
+      "subject": "fix(mcp): match search keywords in hosted exec search"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "d2cd32e1c175e77c0b0159ac90b34dc127873372",
+      "file": "P4-0001-fix-mcp-stop-hinting-at-tools-gated-on-server-minted.patch",
+      "series": "bugfix",
+      "sha256": "b75934558ee05a7814cb66efd016f93c594eb8b70e8d2ef262111f69f37dfc33",
+      "subject": "fix(mcp): stop hinting at tools gated on server-minted scopes"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "9ffa6101cf6d8300144c47f09fba0ae405b00da2",
+      "file": "R3-0001-fix-mcp-leave-the-api-host-out-of-403-and-429-error-.patch",
+      "series": "bugfix",
+      "sha256": "3b278eea144d8085f9f4f6d8d9d08df6b40708c3f6e520a81a3c534cd291808e",
+      "subject": "fix(mcp): leave the api host out of 403 and 429 error messages"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "771ae9fdc8754ae68dc1713cc26b853184011ab1",
+      "file": "V2-0001-fix-mcp-trim-the-user-settings-update-response-like-.patch",
+      "series": "bugfix",
+      "sha256": "1dbddc0ab3f728c28b1c331bbc3066dc132c44c56d8ca69787ed532b427a6f06",
+      "subject": "fix(mcp): trim the user-settings-update response like user-get"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "f6bd028c49114e287181f8e4189dd2d3df2892e5",
+      "file": "J1-0001-fix-mcp-stop-returning-an-unreadable-2xx-body-as-a-t.patch",
+      "series": "bugfix",
+      "sha256": "5be06583c41732f1921dfb06a6109589a68eb214ae506cba61b48d2a29d3bf34",
+      "subject": "fix(mcp): stop returning an unreadable 2xx body as a tool result"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "cda63ff2a20ce05538ef93d63beddc86b5e5450f",
+      "file": "0001-feat-mcp-return-short-receipts-from-writes-and-delet.patch",
+      "series": "usability",
+      "sha256": "f7dad0dac3fb2515a48211333d5327ebee188a9ba856475d955055a7d7ad0cd4",
+      "subject": "feat(mcp): return short receipts from writes and deletes"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "a364e92ac31fcdd4fab181c055f33e9689e68af7",
+      "file": "0002-feat-mcp-send-each-tool-s-_agentNote-once-per-sessio.patch",
+      "series": "usability",
+      "sha256": "fdc918f932487714b6d530cc8811b21452b636cbb0611f36233c2d1bb39b31e8",
+      "subject": "feat(mcp): send each tool's _agentNote once per session"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "4f2c51f78d3148600bc8587bb57aeebe435658df",
+      "file": "0003-feat-mcp-de-duplicate-schemas-in-exec-info-and-schem.patch",
+      "series": "usability",
+      "sha256": "54147895e99bab64672c0ebfb34a0183a9900cefdd0dd74d87414b645b310acb",
+      "subject": "feat(mcp): de-duplicate schemas in exec info and schema output"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "96ea4b7557d02e10ac42aad42c10b6a327eb3ab0",
+      "file": "0004-feat-mcp-format-query-retention-results-as-a-compact.patch",
+      "series": "usability",
+      "sha256": "fcdd2d13ecd3826b54f4d4c831f92fd24a976599d6f298cfaca4494df770bf02",
+      "subject": "feat(mcp): format query-retention results as a compact table"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "8bfe7b344589072cea4387bfd3b596c62afd047c",
+      "file": "0005-feat-mcp-list-feature-flags-with-a-rollout-summary.patch",
+      "series": "usability",
+      "sha256": "759a865d8e99d6ddcb9faa3fd95099018c0765d72866c4451eabd006848ee998",
+      "subject": "feat(mcp): list feature flags with a rollout summary"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "ed12abd7a0a528040a9edf65daee228cc2d77160",
+      "file": "0006-feat-mcp-require-confirm-for-destructive-tools-over-.patch",
+      "series": "usability",
+      "sha256": "06e0cf6b9d6286c5399fe5e4089792818659d62539a0a3ee2c8e4eb99fb54617",
+      "subject": "feat(mcp): require --confirm for destructive tools over MCP"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "2c172f779cb6c242c2d26e7443670bb4feb32ab3",
+      "file": "0007-feat-mcp-resolve-guessed-tool-name-orderings-and-nam.patch",
+      "series": "usability",
+      "sha256": "0e71f032e6d68e89bbcb46ba560068e48890d2555da7477e596451a0856352f2",
+      "subject": "feat(mcp): resolve guessed tool-name orderings and name close tools"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "8dfb8999211259c0632a3727deb09961e28718e6",
+      "file": "0008-feat-mcp-carry-the-failing-field-s-schema-in-call-va.patch",
+      "series": "usability",
+      "sha256": "73e90ffb3dd1aa6b3ab86155cbee0b5ea6649a8a7824ffd3c4c1056bc58bd80e",
+      "subject": "feat(mcp): carry the failing field's schema in call validation errors"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "0d531df727e2aee39e8ba50c0a86f46a0292095c",
+      "file": "0009-feat-mcp-keep-exec-text-consistent-when-skills-canno.patch",
+      "series": "usability",
+      "sha256": "8f4b471e4502d9d8c578b8041ff9d70e9778f589affc9a96c54f141c2ac7a7aa",
+      "subject": "feat(mcp): keep exec text consistent when skills cannot be loaded"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "25aef102e5a9e8680593f9a87b960be659efa3eb",
+      "file": "0010-feat-mcp-list-only-seen-events-from-read-data-schema.patch",
+      "series": "usability",
+      "sha256": "d90efce678a59871df14fe9624fa660dc27c773ff1d08c566619ebb552c2fce7",
+      "subject": "feat(mcp): list only seen events from read-data-schema"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "1072d43de5adb4e2b8b8f6b62a85e8bbff5585b1",
+      "file": "0011-feat-mcp-batch-read-only-exec-commands-in-one-reques.patch",
+      "series": "usability",
+      "sha256": "e3e1fefad705cd9ca9065f15371ee75c89e5f387e0511d451077040aec72ed06",
+      "subject": "feat(mcp): batch read-only exec commands in one request"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "c624374a00800e92245277aa56f0569fb8b8a19e",
+      "file": "0012-feat-mcp-add-batch-tools-for-insights-and-annotation.patch",
+      "series": "usability",
+      "sha256": "8effe4887f09061a9e2c1cb483ce68b5cf125319182d047d47192b3795c91a60",
+      "subject": "feat(mcp): add batch tools for insights and annotations"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "a086bcd4b58856ae613488db62c25bf8b63ba81b",
+      "file": "0013-feat-mcp-add-dashboard-create-with-insights-with-com.patch",
+      "series": "usability",
+      "sha256": "fa65f893351e769036b25a337d2986e7ca8727802b45a4f7a57447e31a738788",
+      "subject": "feat(mcp): add dashboard-create-with-insights with compensating rollback"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "4bdd79e1d5bf44bdfc80470d360d5463892017c7",
+      "file": "0014-feat-mcp-add-version-checked-partial-updates-for-nes.patch",
+      "series": "usability",
+      "sha256": "332e46830b19273a001381cef330c8fd8bbab606f83e2305f6ee3fb2a4cf76e8",
+      "subject": "feat(mcp): add version-checked partial updates for nested arrays"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "cd27c4769395169fec92b67fef8acd1e8c7c08ca",
+      "file": "0015-docs-mcp-describe-the-atomic-write-and-batch-pattern.patch",
+      "series": "usability",
+      "sha256": "551bc9ee82fedf90b5a8d3415457156a4f6eba1cba8a5005d0546f4027a7741a",
+      "subject": "docs(mcp): describe the atomic-write and batch patterns"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "25f378139bd9d6d2991608489625220b6f61fcd8",
+      "file": "0016-fix-mcp-keep-annotation-create-s-receipt-flag-out-of.patch",
+      "series": "usability",
+      "sha256": "365b4b8a38e9461db2b230ab5831c49b8a1805f9f04b24b4ee283c36df340798",
+      "subject": "fix(mcp): keep annotation-create's receipt flag out of batch items"
+    },
+    {
+      "applied_relative_to": "root",
+      "commit": "f66c0f093934c5654d0798bfbf4ed400f874bb6c",
+      "file": "0017-test-mcp-refresh-the-read-data-schema-schema-snapsho.patch",
+      "series": "usability",
+      "sha256": "be33130267349d5fad7f3f98ffc01431b1a3a529a5d175b14bfbdc674b8159b3",
+      "subject": "test(mcp): refresh the read-data-schema schema snapshot for include_unseen"
+    }
+  ],
+  "patches_not_applied": [
+    {
+      "file": "K3-0001-fix-error-tracking-point-the-suppression-skill-at-th.patch",
+      "reason": "error: products/error_tracking/skills/suppressing-noisy-errors/SKILL.md: No such file or directory ",
+      "series": "bugfix",
+      "sha256": "67594a44c185195110369326f1eab0df2f03d39b44b40181c2e152e175201637"
+    }
+  ],
+  "pnpm": "11.28.5",
+  "posthog_repo": "PostHog/posthog",
+  "posthog_sha": "7b516983bef16b9692a00a6b7780a6b5a802257c",
+  "server_dir": "services/mcp",
+  "source_tree_files": 1051,
+  "source_tree_sha256": "2c78c1071cbaecdc4afbd2cbe5ee7ae16f752524949501a6931619ce1ac619cc"
+}
