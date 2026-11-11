@@ -1,0 +1,83 @@
+name: CI
+
+# Checks the experiment without network services, keys or models: the harness offline tests, that both patch series
+# apply cleanly to the upstream tag and reproduce the build tags, and the RFC 3161 timestamps of the measured freeze.
+# Nothing is published and no secret is used.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness-offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Offline tests (no network, no key, no model)
+        working-directory: harness
+        run: python3 -I -B tests/test_offline.py
+
+  patch-series:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code with tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Apply both series with git am onto the upstream tag
+        run: |
+          set -euo pipefail
+          series() { sed 's/#.*//; s/[[:space:]]//g' "experiment-patches/$1/SERIES" | grep -v '^$'; }
+          git worktree add --detach ../applied upstream-7b516983
+          for s in bugfix usability; do
+            for p in $(series "$s"); do
+              git -C ../applied -c user.name=ci -c user.email=ci@ci.invalid am --quiet "$PWD/experiment-patches/$s/$p" < /dev/null
+              echo "applied $s/$p"
+            done
+            tag=fixed-r3; [ "$s" = usability ] && tag=usability-r3
+            got="$(git -C ../applied rev-parse 'HEAD^{tree}')"; want="$(git rev-parse "$tag^{tree}")"
+            echo "after $s: tree $got, tag $tag tree $want"
+            [ "$got" = "$want" ]
+          done
+          for f in experiment-patches/*/*.patch; do
+            grep -qxF "$(basename "$f")" <(sed 's/#.*//; s/[[:space:]]//g' "$(dirname "$f")/SERIES") || { echo "$f is not in its SERIES" >&2; exit 1; }
+          done
+
+  timestamps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the RFC 3161 tokens against the manifest hash
+        run: results/2026-11-11-three-builds/timestamps/verify.sh /etc/ssl/certs/ca-certificates.crt
