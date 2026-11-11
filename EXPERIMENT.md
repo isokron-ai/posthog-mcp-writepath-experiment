@@ -41,9 +41,10 @@ IsoKron's additions, all outside PostHog's paths:
 | --- | --- |
 | [`EXPERIMENT.md`](EXPERIMENT.md), [`CHANGES-EXPERIMENT.md`](CHANGES-EXPERIMENT.md), [`NOTICE`](NOTICE), [`SECURITY.md`](SECURITY.md), [`SUPPORT.md`](SUPPORT.md) | This description, the change list, attribution, reporting |
 | [`experiment-patches/`](experiment-patches/) | The two patch series, applicable to a clean upstream checkout (`bugfix/`, then `usability/`, each in its `SERIES` order). Not `patches/`, which is PostHog's directory of npm dependency patches |
-| [`results/`](results/) | [`BENCHMARK.md`](results/BENCHMARK.md), the analysis of each measured series, per-run summary metrics and call sequences, build records |
+| [`results/`](results/) | [`BENCHMARK.md`](results/BENCHMARK.md), the analysis of each measured series, per-run summary metrics and call sequences, build records, the RFC 3161 timestamps of the measured freeze, and the [usability pass](results/usability-pass-2026-11-10/USABILITY-PASS.md) report |
 | [`harness/`](harness/) | The benchmark harness: tasks, mechanical checkers, fixtures, agent runner, build scripts, offline tests |
 | [`selfhost/`](selfhost/) | The local PostHog open-source instance the measurements ran against: compose override, pinned image digests, setup scripts |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: the harness offline tests, both patch series applied with `git am` onto the upstream tag (and checked against the build tags), and the timestamp check |
 
 ## Three builds
 
@@ -176,9 +177,13 @@ Per-task tables, per-round medians, every failed call with the server's reason, 
 **What is published, and what is not.** Published: the analysis of each series, a CSV of per-run summary metrics
 (correctness, calls, turns, failures, bytes, tokens, cost, wall time), each run's sequence of tool calls (tool, exec verb
 and tool name, bytes, error flag, latency; no arguments or results), the build records, the catalog each build showed the
-agent, and a copy of the frozen manifest with local paths and instance identifiers removed. Not published: raw agent
-transcripts, MCP request/response captures, end-state snapshots, answers and the agents' own friction notes. They carry
-identifiers and tokens of the local test instance, and the summaries above are computed from them.
+agent, a copy of the frozen manifest with local paths and instance identifiers removed, the two RFC 3161 timestamp
+tokens of the freeze with the original manifest's sha256 and a script that verifies them
+([`results/2026-11-11-three-builds/timestamps/`](results/2026-11-11-three-builds/timestamps/README.md)), and the
+usability-pass report with its summary tables, friction register and ranked change list. Not published: the original
+manifest, raw agent transcripts, MCP request/response captures, end-state snapshots, answers, the benchmark agents' own
+friction notes, and the usability pass's call ledger. They carry identifiers and tokens of the local test instance; the
+summaries above are computed from them.
 
 ## Build and compare
 
@@ -207,7 +212,7 @@ for s in bugfix usability; do
 done
 ```
 
-(Stop after `bugfix` for the bug-fix build.) [`harness/build/build.sh`](harness/build/build.sh) `baseline|fixed|usability`
+(Stop after `bugfix` for the bug-fix build.) CI runs exactly this against the `upstream-7b516983` tag on every push. [`harness/build/build.sh`](harness/build/build.sh) `baseline|fixed|usability`
 does the same from its own clone of upstream and records every hash in `build/out/<build>/BUILD.json`. Run a bundle with
 `node dist/hono-server.mjs` (environment as in [`harness/server/start-server.sh`](harness/server/start-server.sh)) and
 point your MCP client at it.

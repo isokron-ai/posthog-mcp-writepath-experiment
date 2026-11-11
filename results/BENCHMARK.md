@@ -41,7 +41,8 @@ results lower cost much less than they lower calls and bytes.
   permutations, each used six times, so each build is first in 12 of the 36 blocks. Fixtures (all named
   `bench-<nonce>-...`) are seeded through the REST API and reset before every run until their state hash matches.
 - **Freeze:** before the first measured run the harness files, build hashes, plan and order seed were hashed into a
-  manifest (`ba289984…`) and timestamped (RFC 3161). Unmeasured dry runs before it found three checker defects and a
+  manifest (`ba289984…`) and timestamped by Sectigo and DigiCert (RFC 3161; tokens and a verify script in
+  [`2026-11-11-three-builds/timestamps/`](2026-11-11-three-builds/timestamps/README.md)). Unmeasured dry runs before it found three checker defects and a
   pacing problem, each fixed with tests and a new freeze before anything was measured.
 - **Scoring:** a mechanical checker reads PostHog's end state through the REST API and applies exact criteria per task,
   including "nothing else changed". No model judges anything.
@@ -273,7 +274,9 @@ Per-task tables: [`2026-11-10-two-builds/ANALYSIS.md`](2026-11-10-two-builds/ANA
 | `2026-11-11-three-builds/runs.csv` | One row per measured run: task set, task, build, repetition, correctness and failed criteria, calls, turns, failures, bytes, tokens, cost, wall time, bundle hash |
 | `2026-11-11-three-builds/calls.jsonl` | Per run, the sequence of tool calls: tool, `exec` verb and tool name, argument and result bytes, error flag, latency. No arguments or results |
 | `2026-11-11-three-builds/MANIFEST.public.json` | The frozen manifest with the local key path, self-host directory, organization id and project id replaced (so it no longer hashes to `ba289984…`) |
+| `2026-11-11-three-builds/timestamps/` | The RFC 3161 timestamp tokens of the freeze (Sectigo, DigiCert), the original manifest's sha256 and `verify.sh`; the original manifest is not published because it holds local instance identifiers |
 | `2026-11-10-two-builds/` | The same files for the earlier two-build series |
+| `usability-pass-2026-11-10/USABILITY-PASS.md` | The usability pass on the unmodified server: per-job summary, friction register, ranked change list (edited for publication) |
 | `builds/*.BUILD.json` | Each build's record: commit, patches applied (and K3, recorded as not applied), bundle and source-tree hashes, Node and pnpm versions |
 | `summarize.py` | Recomputes the tables above from a `runs.csv` |
 
