@@ -1,8 +1,8 @@
 #!/bin/bash
 # Record what the agent will see from one build: initialize + tools/list through the proxy -> catalog/<build>-<mode>.json.
-# Read-only by default (no tool is called). usage: TARGET=cloud|selfhosted server/catalog.sh baseline|fixed|usability [smoke.py args...]
+# Read-only by default (no tool is called). usage: TARGET=selfhosted server/catalog.sh baseline|fixed|usability [smoke.py args...]
 #   -> $CATALOG_DIR/<build>-<mode>.json; extra arguments go to server/smoke.py (--exec, --read-call, --write-roundtrip N12).
-# Afterwards prints where every connection of the MCP server went (the [egress] lines; TARGET=selfhosted only) and the
+# Afterwards prints where every connection of the MCP server went (the [egress] lines) and the
 # upstreams in the proxy capture.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"; eval "$(python3 -I -B "$ROOT/lib/target.py" --shell)" || exit 2
@@ -27,7 +27,7 @@ c = collections.Counter()
 for l in open(sys.argv[1], errors="replace"):
     if l.startswith("[egress] "):
         j = json.loads(l[9:]); c["%s %s:%s" % (j["event"], j.get("host", ""), j.get("port", ""))] += 1 if j["event"] in ("allowed", "refused", "refused_dns") else 0
-print("server connections: " + (", ".join("%s x%d" % kv for kv in sorted(c.items()) if kv[1]) or "no [egress] lines (TARGET=cloud runs without the guard)"))
+print("server connections: " + (", ".join("%s x%d" % kv for kv in sorted(c.items()) if kv[1]) or "no [egress] lines"))
 u = collections.Counter(json.loads(l).get("upstream") for l in open(sys.argv[2]))
 print("proxy capture upstreams: " + ", ".join("%s x%d" % kv for kv in u.items()))
 PY

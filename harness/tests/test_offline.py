@@ -53,7 +53,7 @@ import target as T
 _td = tempfile.mkdtemp(prefix="target-test-")
 def _cfgfile(name, text):
     p = os.path.join(_td, name); open(p, "w").write(text); return p
-_base = _cfgfile("config.env", "POSTHOG_HOST=https://us.posthog.com\nPOSTHOG_PROJECT_ID=12345\nEXPECTED_ORG_ID=org-cloud\nPOSTHOG_KEY_FILE=~/.isokron/posthog-audit-key\nMCP_MODE=cli\n")
+_base = _cfgfile("config.env", "MCP_MODE=cli\nMAX_REQUESTS_PER_SECOND=2\n")
 _sh_ok = "POSTHOG_HOST=http://127.0.0.1:8010\nPOSTHOG_PROJECT_ID=2\nEXPECTED_ORG_ID=org-local\nPOSTHOG_KEY_FILE=/tmp/local-test-key\n"
 def _load(target, overlay=None, env=None):
     saved = dict(T.OVERLAYS); T.OVERLAYS["selfhosted"] = _cfgfile("ov.env", overlay) if overlay is not None else saved["selfhosted"]
@@ -63,21 +63,22 @@ def _load(target, overlay=None, env=None):
         T.OVERLAYS.clear(); T.OVERLAYS.update(saved)
 ok("target: no TARGET is refused (no silent default)", refuses(lambda: _load("")))
 ok("target: unknown TARGET is refused", refuses(lambda: _load("staging")))
-ok("target: cloud resolves to the Cloud settings", _load("cloud")["POSTHOG_HOST"] == "https://us.posthog.com")
+ok("target: TARGET=cloud is refused (self-hosted only)", refuses(lambda: _load("cloud", _sh_ok)))
 c = _load("selfhosted", _sh_ok)
-ok("target: selfhosted overlay replaces host, project, org and key file", (c["POSTHOG_HOST"], c["POSTHOG_PROJECT_ID"], c["EXPECTED_ORG_ID"], c["POSTHOG_KEY_FILE"]) == ("http://127.0.0.1:8010", "2", "org-local", "/tmp/local-test-key"))
+ok("target: selfhosted overlay sets host, project, org and key file", (c["POSTHOG_HOST"], c["POSTHOG_PROJECT_ID"], c["EXPECTED_ORG_ID"], c["POSTHOG_KEY_FILE"]) == ("http://127.0.0.1:8010", "2", "org-local", "/tmp/local-test-key"))
 ok("target: selfhosted refuses a non-loopback host", refuses(lambda: _load("selfhosted", _sh_ok.replace("http://127.0.0.1:8010", "https://us.posthog.com"))))
 ok("target: selfhosted refuses a lookalike host", refuses(lambda: _load("selfhosted", _sh_ok.replace("127.0.0.1:8010", "127.0.0.1.example.com"))))
-ok("target: selfhosted refuses the Cloud key file", refuses(lambda: _load("selfhosted", _sh_ok.replace("/tmp/local-test-key", "~/.isokron/posthog-audit-key"))))
-ok("target: selfhosted refuses any key file under ~/.isokron", refuses(lambda: _load("selfhosted", _sh_ok.replace("/tmp/local-test-key", "~/.isokron/other-key"))))
-ok("target: selfhosted refuses an overlay that inherits the Cloud key file", refuses(lambda: _load("selfhosted", "\n".join(l for l in _sh_ok.splitlines() if not l.startswith("POSTHOG_KEY_FILE")))))
-ok("target: selfhosted refuses an overlay that inherits the Cloud host", refuses(lambda: _load("selfhosted", "\n".join(l for l in _sh_ok.splitlines() if not l.startswith("POSTHOG_HOST")))))
-ok("target: an environment override back to Cloud is refused", refuses(lambda: _load("selfhosted", _sh_ok, env={"POSTHOG_HOST": "https://us.posthog.com"})))
-ok("target: cloud refuses a loopback host", refuses(lambda: _load("cloud", env={"POSTHOG_HOST": "http://127.0.0.1:8010"})))
-ok("target: live client refuses selfhosted cfg with the Cloud key", refuses(lambda: P.PostHog(cfg=dict(c, POSTHOG_KEY_FILE="~/.isokron/posthog-audit-key"))))
-_p = subprocess.run(["node", os.path.join(ROOT, "server", "mcp-proxy.mjs"), "--listen", "1", "--upstream", "http://127.0.0.1:2", "--key-file", "~/.isokron/posthog-audit-key",
+ok("target: selfhosted refuses an empty key file setting", refuses(lambda: _load("selfhosted", _sh_ok.replace("/tmp/local-test-key", ""))))
+ok("target: selfhosted refuses an overlay without its own key file", refuses(lambda: _load("selfhosted", "\n".join(l for l in _sh_ok.splitlines() if not l.startswith("POSTHOG_KEY_FILE")))))
+ok("target: selfhosted refuses an overlay without its own host", refuses(lambda: _load("selfhosted", "\n".join(l for l in _sh_ok.splitlines() if not l.startswith("POSTHOG_HOST")))))
+ok("target: an environment override to a non-loopback host is refused", refuses(lambda: _load("selfhosted", _sh_ok, env={"POSTHOG_HOST": "https://us.posthog.com"})))
+ok("target: live client refuses a non-loopback host", refuses(lambda: P.PostHog(cfg=dict(c, POSTHOG_HOST="https://us.posthog.com"))))
+_p = subprocess.run(["node", os.path.join(ROOT, "server", "mcp-proxy.mjs"), "--listen", "1", "--upstream", "http://203.0.113.1:2", "--key-file", os.path.join(_td, "no-such-key"),
                      "--project-id", "1", "--mode", "cli", "--target", "selfhosted", "--capture", os.path.join(_td, "cap.jsonl")], capture_output=True, text=True, timeout=30)
-ok("target: proxy refuses the Cloud key path for selfhosted (without reading it)", _p.returncode == 2 and "REFUSED" in _p.stderr and not os.path.exists(os.path.join(_td, "cap.jsonl")), _p.stderr)
+ok("target: proxy refuses a non-loopback upstream (before reading any key)", _p.returncode == 2 and "REFUSED" in _p.stderr and not os.path.exists(os.path.join(_td, "cap.jsonl")), _p.stderr)
+_p = subprocess.run(["node", os.path.join(ROOT, "server", "mcp-proxy.mjs"), "--listen", "1", "--upstream", "http://127.0.0.1:2", "--key-file", os.path.join(_td, "no-such-key"),
+                     "--project-id", "1", "--mode", "cli", "--target", "cloud", "--capture", os.path.join(_td, "cap2.jsonl")], capture_output=True, text=True, timeout=30)
+ok("target: proxy refuses any target but selfhosted", _p.returncode == 2 and "target must be selfhosted" in _p.stderr, _p.stderr)
 
 # ---- hourly request budget: wait for the next hour instead of stopping (dry run 2026-11-10, run d017) ----------------
 _tp = os.path.join(tempfile.mkdtemp(), "throttle"); _th = P.Throttle(1000, per_hour=3, path=_tp); _slept = []

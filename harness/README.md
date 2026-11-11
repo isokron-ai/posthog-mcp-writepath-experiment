@@ -11,13 +11,13 @@ tasks, six friction-derived tasks), with mechanical end-state checkers. The harn
 | `usability` | Research build | `usability-r3` | plus `../experiment-patches/usability/` (14 usability changes, a design note, two integration fixes) |
 Plan and scoring: [`bench/BENCH-PLAN.md`](bench/BENCH-PLAN.md).
 
-It is published as it was used, not packaged as a general tool. It is IsoKron's working harness, so some comments name
-IsoKron's own conventions (for example `~/.isokron`, where IsoKron keeps a Cloud key that the self-hosted target refuses).
+It is published as it was used, apart from the changes listed below, and is not packaged as a general tool. It runs
+only against a self-hosted PostHog open-source instance on loopback.
 
 ## What differs from the frozen harness
 
 The measured series froze 109 harness files by sha256 (`../results/2026-11-11-three-builds/MANIFEST.public.json`,
-`harness_files`). 98 of them are published byte-identical: every task, checker, fixture, plan, runner, server and library
+`harness_files`). 92 of them are published byte-identical, including every task, checker, fixture, plan and runner
 file. Changed for publication, with nothing else changed in them:
 
 | File | Change |
@@ -25,30 +25,29 @@ file. Changed for publication, with nothing else changed in them:
 | `config.env`, `config.selfhosted.env` | Templates: IsoKron's project and organization ids, key-file paths and local directories replaced by `<FILL_ME>` or relative paths |
 | `build/build.sh` | Reads the patch series from `../experiment-patches/` instead of copying them in from a private folder; messages name the new paths |
 | `bench/_make_manifest.py` | Hashes `../experiment-patches/` in place of the old `patches/` and `patches-usability/` folders |
-| `tests/test_offline.py` | A Cloud project id in a test fixture replaced by a dummy |
+| `lib/target.py`, `lib/ph.py`, `server/mcp-proxy.mjs`, `server/start-server.sh`, `server/catalog.sh`, `bench/freeze.py` | The PostHog Cloud target removed: `TARGET=selfhosted` is the only accepted value, a non-loopback host or upstream is refused, the egress guard always runs, and the key file has no default. IsoKron used the Cloud target only while developing the harness; no published result came from it |
+| `tests/test_offline.py` | The tests that covered only the Cloud target replaced by tests that `TARGET=cloud`, a non-loopback host or upstream, and an overlay without its own settings are refused |
 | `patches/SERIES`, `patches-usability/SERIES` | Now `../experiment-patches/*/SERIES`; same order, with K3 (which did not apply) left out of the list |
 
 Not published: `patches/K3-…` (not applied to any build), the two skills archives in `server/assets/` (see below), and
 everything written at run time (`runs/`, `dryruns/`, `evidence/`, `state/`, `logs/`, `.kl/`, the series' evidence chain
 and the internal ledger). `README.md`, `.gitignore` and `bench/agent-cwd/.keep` were never part of the frozen set.
 
-## Backends
+## Target
 
-`TARGET` is required, with no default (`lib/target.py`):
+`TARGET=selfhosted` is required, with no default, and is the only accepted value (`lib/target.py`): a local PostHog
+open-source instance set up with [`../selfhost/`](../selfhost/README.md), `config.selfhosted.env` on top of
+`config.env`. The harness refuses a non-loopback host, and the proxy refuses a non-loopback upstream. The MCP server
+runs with `server/local-runtime.mjs` preloaded: a loopback-only egress guard (each connection logged as `[egress]` in the
+server log) and the pinned skills archives (`server/assets/`, sha256 in `SHA256SUMS`) served on loopback.
 
-- `TARGET=selfhosted`: a local PostHog open-source instance (set up with [`../selfhost/`](../selfhost/README.md)),
-  `config.selfhosted.env` on top of `config.env`. The harness refuses a non-loopback host. The MCP server runs with
-  `server/local-runtime.mjs` preloaded: a loopback-only egress guard (each connection logged as `[egress]` in the server
-  log) and the pinned skills archives (`server/assets/`, sha256 in `SHA256SUMS`) served on loopback. Every published
-  result used this target.
-- `TARGET=cloud`: PostHog Cloud, `config.env`. For harness development only. PostHog's Cloud terms of service (section
-  2.1(i)) restrict benchmarking PostHog Cloud and publishing the results without PostHog's written consent.
-
-No load or fuzz testing: harness requests are capped at 2 per second.
+PostHog Cloud is deliberately not a target: PostHog's Cloud terms of service (section 2.1(i)) restrict benchmarking
+PostHog Cloud and publishing the results without PostHog's written consent. Self-hosted PostHog open source is MIT
+licensed. No load or fuzz testing: harness requests are capped at 2 per second.
 
 ## Layout
 
-    config.env                non-secret settings (Cloud target, model, budget, ports); config.selfhosted.env overlays it
+    config.env                non-secret settings (model, budget, ports); config.selfhosted.env adds the instance
     build/                    PIN (commit), clone.sh, build.sh baseline|fixed|usability -> build/out/<name>/{hono-server.mjs,BUILD.json}
     server/                   redis.sh, start-server.sh, local-runtime.mjs, mcp-proxy.mjs (adds the key, pins mode and project,
                               redacted capture), smoke.py, catalog.sh, assets/ (PROVENANCE.json, SHA256SUMS)
@@ -80,9 +79,14 @@ Run every command from this directory.
    (`server/assets/PROVENANCE.json`). The runs served pinned copies from loopback, and `server/local-runtime.mjs` refuses
    files that do not match `server/assets/SHA256SUMS`. `server/assets/fetch.sh` downloads both; `skills-mcp-resources.zip`
    comes from a fixed release (v1.62.0), but `skills.zip` is re-published under the same `agent-skills-latest` tag (last
-   on 11 November 2026, after the runs), so a fresh download may not match. Either use the
-   current file and record its sha256 in `SHA256SUMS` (a disclosed difference from the measured runs), or ask IsoKron
-   for the measured copy.
+   on 11 November 2026, after the runs), so a fresh download may not match. The archives are not redistributed here
+   (PostHog's `context-mill` repository carries no licence). The measured runs served:
+
+       skills.zip                 sha256 c08982836289f8771ff0ab978a76e154ccb48f21a7926973366efdafb1799254
+       skills-mcp-resources.zip   sha256 c237f2c47c8d487023e796604e8469cb01a42b967aba5820c9cba2d3482ff00a
+
+   If your download differs, record its sha256 in `SHA256SUMS` and report it with your results: with a newer archive the
+   server's skills text differs from the measured runs, and results may differ too.
 
 ## Commands
 

@@ -154,7 +154,7 @@ def main():
     eh = {b: json.load(open(os.path.join(ROOT, "build", "out", b, "BUILD.json")))["entry_sha256"] for b in ("baseline", "fixed")}
     if eh["baseline"] == eh["fixed"]: sys.exit("the fixed bundle is byte-identical to the baseline bundle (the patches change nothing that is bundled): nothing to compare")
     sys.path.insert(0, os.path.join(ROOT, "lib")); import ph as P  # noqa: E402
-    cfg = P.load_config()  # TARGET=cloud|selfhosted required; the selfhosted checks (loopback host, not the Cloud key) apply
+    cfg = P.load_config()  # TARGET=selfhosted required; loopback host checked
     if not cfg.get("POSTHOG_PROJECT_ID", "").isdigit(): sys.exit("POSTHOG_PROJECT_ID is not filled in for TARGET=%s" % cfg["TARGET"])
     for b in ("baseline", "fixed"):
         if not os.path.exists(os.path.join(ROOT, cfg["CATALOG_DIR"], "%s-%s.json" % (b, cfg["MCP_MODE"]))):

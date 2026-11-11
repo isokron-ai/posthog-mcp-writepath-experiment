@@ -1,10 +1,10 @@
 """PostHog REST access for the benchmark harness (stdlib only, Python 3.9+). Run scripts with: python3 -I -B <script>
 
 Safety properties implemented here (all harness scripts go through this module):
-  * the API key is read from the first line of POSTHOG_KEY_FILE (default ~/.isokron/posthog-audit-key), held in memory only,
+  * the API key is read from the first line of POSTHOG_KEY_FILE (no default), held in memory only,
     sent as a Bearer header, and never printed, logged or written; redact() masks key shapes in any text that is written;
   * only project-based endpoints of the configured project are reachable: every path must start with /api/projects/<id>/;
-  * the target (lib/target.py): TARGET=cloud|selfhosted is required; selfhosted refuses a non-loopback host and the Cloud key;
+  * the target (lib/target.py): TARGET=selfhosted is required, and a non-loopback host is refused;
   * guard(): a read-only preflight that refuses to continue unless the key resolves to POSTHOG_PROJECT_ID and that project's
     organization id equals EXPECTED_ORG_ID;
   * a global throttle shared by every harness process (file lock): at most MAX_REQUESTS_PER_SECOND requests per second;
@@ -35,7 +35,7 @@ def redact(text, literals=()):
 
 
 def load_config(path=None):
-    """config.env + the TARGET overlay (lib/target.py). TARGET=cloud|selfhosted must be set; there is no default."""
+    """config.env + the TARGET overlay (lib/target.py). TARGET=selfhosted must be set; there is no default."""
     return _target.load(path)
 
 
@@ -106,8 +106,8 @@ class PostHog:
         self._transport = transport  # tests inject a fake transport(method, path, body) -> (status, json)
         self._key = None
         if transport is None:
-            _target.check(self.cfg)  # TARGET set; selfhosted => loopback host and not the Cloud key (refuses otherwise)
-            kf = os.path.expanduser(self.cfg.get("POSTHOG_KEY_FILE", "~/.isokron/posthog-audit-key"))
+            _target.check(self.cfg)  # TARGET=selfhosted and a loopback host (refuses otherwise)
+            kf = os.path.expanduser(self.cfg.get("POSTHOG_KEY_FILE", ""))
             try:
                 with open(kf) as f:
                     self._key = f.readline().strip()

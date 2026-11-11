@@ -3,8 +3,8 @@
 //  - pins the mode (x-posthog-mcp-mode) and the project (x-posthog-project-id), optional feature filter
 //  - writes a redacted JSON-lines capture of every MCP request/response to a file that must not exist yet
 // usage: node server/mcp-proxy.mjs --listen PORT --upstream http://127.0.0.1:PORT --key-file PATH --project-id N
-//                                  --mode cli|tools [--features a,b] [--target cloud|selfhosted] --capture FILE
-// --target selfhosted: refuses a non-loopback upstream and any key file under ~/.isokron (the Cloud key lives there).
+//                                  --mode cli|tools [--features a,b] [--target selfhosted] --capture FILE
+// Refuses a non-loopback upstream, whatever --target says; the only accepted target is selfhosted.
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,13 +16,8 @@ if (!['cli', 'tools'].includes(args.mode)) { console.error('mode must be cli or 
 if (!/^\d+$/.test(args['project-id'])) { console.error('project-id must be a number'); process.exit(2); }
 if (fs.existsSync(args.capture)) { console.error(`capture file ${args.capture} already exists: capture paths are never reused`); process.exit(2); }
 const keyPath = args['key-file'].replace(/^~(?=\/)/, os.homedir());
-if (args.target && !['cloud', 'selfhosted'].includes(args.target)) { console.error('target must be cloud or selfhosted'); process.exit(2); }
-if (args.target === 'selfhosted') {
-  const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
-  const isokron = real(os.homedir() + '/.isokron');
-  if (real(keyPath) === isokron || real(keyPath).startsWith(isokron + '/')) { console.error('REFUSED: target selfhosted with a key file under ~/.isokron (the PostHog Cloud key lives there)'); process.exit(2); }
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(args.upstream).hostname)) { console.error('REFUSED: target selfhosted with a non-loopback upstream'); process.exit(2); }
-}
+if (args.target && args.target !== 'selfhosted') { console.error('target must be selfhosted'); process.exit(2); }
+if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(args.upstream).hostname)) { console.error('REFUSED: non-loopback upstream'); process.exit(2); }
 let key;
 try { key = fs.readFileSync(keyPath, 'utf8').split('\n')[0].trim(); } catch { console.error(`cannot read key file ${args['key-file']}`); process.exit(2); }
 if (!key) { console.error('key file is empty'); process.exit(2); }
