@@ -1,9 +1,14 @@
 # Benchmark harness: PostHog MCP server, three builds, two task sets
 
 IsoKron's harness for the measurement in [`../results/BENCHMARK.md`](../results/BENCHMARK.md). It compares local builds
-of `services/mcp` from PostHog/posthog at one pinned commit: BASELINE (unmodified), FIXED (plus
-`../experiment-patches/bugfix/`) and USABILITY (FIXED plus `../experiment-patches/usability/`), on two separately reported
-task sets (six pre-registered tasks, six friction-derived tasks), with mechanical end-state checkers.
+of `services/mcp` from PostHog/posthog at one pinned commit, on two separately reported task sets (six pre-registered
+tasks, six friction-derived tasks), with mechanical end-state checkers. The harness names the builds by their ids:
+
+| Harness id | Name in the write-up | Git tag | Source |
+| --- | --- | --- | --- |
+| `baseline` | Unmodified | `upstream-7b516983` | the pinned commit |
+| `fixed` | Bug-fix build | `fixed-r3` | plus `../experiment-patches/bugfix/` |
+| `usability` | Research build | `usability-r3` | plus `../experiment-patches/usability/` (14 usability changes, a design note, two integration fixes) |
 Plan and scoring: [`bench/BENCH-PLAN.md`](bench/BENCH-PLAN.md).
 
 It is published as it was used, not packaged as a general tool. It is IsoKron's working harness, so some comments name
