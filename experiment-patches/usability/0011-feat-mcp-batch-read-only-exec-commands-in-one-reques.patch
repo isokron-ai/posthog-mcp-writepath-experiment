@@ -1,0 +1,433 @@
+From 1072d43de5adb4e2b8b8f6b62a85e8bbff5585b1 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:57:52 -0700
+Subject: [PATCH 11/17] feat(mcp): batch read-only exec commands in one request
+
+exec rejected any request holding more than one command (A3), so an
+agent's discovery (search, info, schema, read-only calls) cost one
+request each.
+
+Up to 10 read-only commands can now share a request, one per line: help,
+tools, search, info, schema, and call on a tool annotated readOnlyHint:
+true. They run in order and each result comes back under its own label;
+a failing command returns its error in its place. A batch holding a call
+to any other tool, or a learn, is refused whole before anything runs, so
+writes stay one per request and confirmable.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/exec-command-reference.md |   2 +-
+ .../mcp/src/templates/sections/cli-syntax.md  |   2 +-
+ .../src/templates/sections/exec-tool-blurb.md |   2 +
+ services/mcp/src/tools/exec.ts                | 154 ++++++++++++++++--
+ ...c-command-reference-claude-chat-skills.txt |   2 +-
+ .../exec-command-reference-claude-chat.txt    |   2 +-
+ .../exec-command-reference-full.txt           |   2 +-
+ .../instructions/exec-tool-description.txt    |   2 +
+ services/mcp/tests/unit/exec.test.ts          |  79 ++++++++-
+ 9 files changed, 225 insertions(+), 22 deletions(-)
+
+diff --git a/services/mcp/schema/exec-command-reference.md b/services/mcp/schema/exec-command-reference.md
+index 8b5108da6e9..87b8c0a1275 100644
+--- a/services/mcp/schema/exec-command-reference.md
++++ b/services/mcp/schema/exec-command-reference.md
+@@ -14,7 +14,7 @@ schema <tool_name> [field_path] — drill into a specific field schema (supports
+ call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+-**One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
++**Batching read-only commands.** Up to 10 read-only commands can share one request, one per line: `help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`. Each result comes back under its own label. A write (any other `call`) or `learn` goes in its own request: a batch holding one is refused before anything in it runs.
+ 
+ **Namespaced references (`posthog:<tool-name>`):** strip the `posthog:` prefix and route through `exec`. Run `info <name>` to inspect, then `call <name> <json>`. E.g. `posthog:insights-list` → `posthog:exec({ "command": "info insights-list" })` then `posthog:exec({ "command": "call insights-list {}" })`. If the bare name isn't found, fall back to `search <pattern>` — it may have been renamed.
+ 
+diff --git a/services/mcp/src/templates/sections/cli-syntax.md b/services/mcp/src/templates/sections/cli-syntax.md
+index 35964624fbf..8c6d1bb897a 100644
+--- a/services/mcp/src/templates/sections/cli-syntax.md
++++ b/services/mcp/src/templates/sections/cli-syntax.md
+@@ -9,6 +9,6 @@ schema <tool_name> [field_path] — drill into a specific field schema (supports
+ call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+-**One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
++**Batching read-only commands.** Up to 10 read-only commands can share one request, one per line: `help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`. Each result comes back under its own label. A write (any other `call`) or `learn` goes in its own request: a batch holding one is refused before anything in it runs.
+ 
+ **Namespaced references (`posthog:<tool-name>`):** strip the `posthog:` prefix and route through `exec`. Run `info <name>` to inspect, then `call <name> <json>`. E.g. `posthog:insights-list` → `posthog:exec({ "command": "info insights-list" })` then `posthog:exec({ "command": "call insights-list {}" })`. If the bare name isn't found, fall back to `search <pattern>` — it may have been renamed.
+diff --git a/services/mcp/src/templates/sections/exec-tool-blurb.md b/services/mcp/src/templates/sections/exec-tool-blurb.md
+index e7435c653ba..9f6fa046dd4 100644
+--- a/services/mcp/src/templates/sections/exec-tool-blurb.md
++++ b/services/mcp/src/templates/sections/exec-tool-blurb.md
+@@ -41,6 +41,8 @@ posthog:exec({ "command": "call --json <tool_name> <json_input>" })
+ - Oversized sub-schemas are also summarized with a `note` to drill further.
+ - Unknown paths return an error listing available child paths.
+ 
++**Batching:** read-only commands (`help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`) can share one request, one command per line; each result comes back labelled. A write always goes in its own request.
++
+ **Not supported:**
+ 
+ - `search` matches tool metadata only, not input schemas.
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index e78965b8788..c3ad0fb1f8f 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -11,6 +11,7 @@ import {
+     ExecCommandError,
+     type ExecCommandErrorReason,
+     findRecoverableApiError,
++    handleToolError,
+     PostHogApiError,
+     ToolInputValidationError,
+ } from '@/lib/errors'
+@@ -434,6 +435,114 @@ function splitBatchedCommands(command: string): string[] | undefined {
+     return commands
+ }
+ 
++/** Verbs that only read, and so may share one request with others. `call` joins them
++ *  only for a tool annotated read-only. `learn` stays one per request, like a write. */
++const READ_ONLY_EXEC_VERBS = new Set(['help', 'tools', 'search', 'info', 'schema'])
++
++/** Bound on one batch, so a request cannot fan out into an unbounded run of calls. */
++export const MAX_BATCH_COMMANDS = 10
++
++interface ReadOnlyBatchDeps {
++    findTool: (name: string) => Promise<Tool<ZodObjectAny>>
++    runCommand: (command: string) => Promise<unknown>
++    trackCommand?: ExecCommandTracker | undefined
++}
++
++/** Why a command cannot run inside a batch, or undefined when it can. Throws nothing:
++ *  a `call` to an unknown tool is left to fail on its own line. */
++async function batchRefusal(
++    command: string,
++    findBatchTool: (name: string) => Promise<Tool<ZodObjectAny>>
++): Promise<string | undefined> {
++    const { verb, rest } = parseCommand(command)
++    if (READ_ONLY_EXEC_VERBS.has(verb)) {
++        return undefined
++    }
++    if (verb !== 'call') {
++        return KNOWN_EXEC_VERBS.has(verb) ? `"${verb}" runs one per request` : undefined
++    }
++    const toolName = parseCommand(parseCallFlags(rest).rest).verb
++    if (!toolName) {
++        return undefined
++    }
++    let tool: Tool<ZodObjectAny>
++    try {
++        tool = await findBatchTool(toolName)
++    } catch {
++        return undefined
++    }
++    return tool.annotations?.readOnlyHint === true ? undefined : `"${tool.name}" is not a read-only tool`
++}
++
++/** The text of one command's result, for a labelled batch entry. */
++function batchEntryText(result: unknown): string {
++    if (typeof result === 'string') {
++        return result
++    }
++    if (isRecord(result) && Array.isArray(result['content'])) {
++        return (result['content'] as unknown[])
++            .map((item) => (isRecord(item) && typeof item['text'] === 'string' ? item['text'] : ''))
++            .filter(Boolean)
++            .join('\n')
++    }
++    return JSON.stringify(result)
++}
++
++function oneLine(command: string): string {
++    const flattened = command.replace(/\s+/g, ' ')
++    return flattened.length > MAX_LISTED_BATCH_COMMAND_LENGTH
++        ? `${flattened.slice(0, MAX_LISTED_BATCH_COMMAND_LENGTH)}...`
++        : flattened
++}
++
++/**
++ * Runs several read-only commands from one request (`info a` / `schema b c` / `call
++ * <read-only tool> {...}` on separate lines) and returns each result under its own
++ * label. Discovery is most of an agent's calls before a write, and each one otherwise
++ * costs a request.
++ *
++ * Writes stay one per request, so each is seen and confirmed on its own: a batch that
++ * holds a `call` to a tool not annotated read-only, or a `learn`, is refused whole and
++ * nothing in it runs. Commands run in order; one failing does not stop the rest, and
++ * its error is returned in its place.
++ */
++async function runReadOnlyBatch(commands: string[], deps: ReadOnlyBatchDeps): Promise<string> {
++    deps.trackCommand?.({ exec_verb: 'batch' })
++    if (commands.length > MAX_BATCH_COMMANDS) {
++        throw new ExecCommandError(batchedCommandMessage(commands), 'batched_command')
++    }
++    const refusals: string[] = []
++    for (const command of commands) {
++        const refusal = await batchRefusal(command, deps.findTool)
++        if (refusal) {
++            refusals.push(`- ${oneLine(command)}: ${refusal}`)
++        }
++    }
++    if (refusals.length > 0) {
++        throw new ExecCommandError(
++            [
++                `This request held ${commands.length} commands, and exec batches read-only commands only. Nothing ran.`,
++                'Send each of these as its own exec call, so a write is seen and confirmed on its own:',
++                ...refusals,
++                'Batchable: help, tools, search, info, schema, and call on a tool whose info shows readOnlyHint: true, one per line.',
++            ].join('\n'),
++            'batched_command'
++        )
++    }
++    const entries: string[] = []
++    for (const [index, command] of commands.entries()) {
++        let text: string
++        try {
++            text = batchEntryText(await deps.runCommand(command))
++        } catch (error) {
++            const tool = parseExecCallInnerToolName(command) ?? 'exec'
++            text = batchEntryText(handleToolError(error, tool))
++        }
++        entries.push(`### [${index + 1}/${commands.length}] ${oneLine(command)}\n${text}`)
++    }
++    return entries.join('\n\n')
++}
++
+ /** Drops "load the <name> skill" steps from a result's `_agentNote` in place, so the
+  *  result's lazily formatted text (`withInformationalResponse`) sees the change. */
+ function stripSkillInstructionsFromAgentNote(result: unknown): void {
+@@ -463,8 +572,8 @@ function batchedCommandMessage(commands: string[]): string {
+         lines.push(`- ...and ${more} more`)
+     }
+     return [
+-        `exec runs one command per request, and this request held ${commands.length}.`,
+-        'Send each one as its own exec call. You can issue them in parallel. Commands found:',
++        `This request held ${commands.length} commands, and a batch holds at most ${MAX_BATCH_COMMANDS}. Nothing ran.`,
++        'Split them across several exec calls. You can issue them in parallel. Commands found:',
+         ...lines,
+     ].join('\n')
+ }
+@@ -1862,19 +1971,19 @@ export function createExecTool(
+         schema: ExecSchema,
+         scopes: [],
+         annotations: { ...EXEC_TOOL_ANNOTATIONS },
+-        handler: async (_context: Context, params: z.infer<ExecSchema>) => {
++        handler: async function execHandler(
++            _context: Context,
++            params: z.infer<ExecSchema>,
++            /** Set (to exactly `true`) for each command of a batch, whose results come back
++             *  as text, never as a UI-app payload. Callers outside this file pass two arguments. */
++            batchEntry?: unknown
++        ): Promise<unknown> {
++            const textOnly = batchEntry === true
+             const { verb, rest } = parseCommand(params.command)
+             // Reported up front so a command that throws (unknown tool, bad regex) still
+             // records what was attempted — those are the failures worth counting.
+             options.trackCommand?.({ exec_verb: verb })
+ 
+-            // Without this the trailing commands ride along as part of the first one's
+-            // argument and come back as an unknown tool name, which explains nothing.
+-            const batched = splitBatchedCommands(params.command)
+-            if (batched) {
+-                throw new ExecCommandError(batchedCommandMessage(batched), 'batched_command')
+-            }
+-
+             let gatewayTools: Tool<ZodObjectAny>[] | undefined
+             const withheldGatewayToolNames = new Set<string>()
+             /** PostHog's tools plus any third-party tools the caller has connected.
+@@ -1910,6 +2019,27 @@ export function createExecTool(
+                 !options.heldTools.has(name) &&
+                 (getToolDefinitions()[name] !== undefined || withheldGatewayToolNames.has(name))
+ 
++            // Several read-only commands may share a request; anything else in a batch is
++            // refused before it runs. Without the split the trailing commands would ride along
++            // as part of the first one's argument and come back as an unknown tool name.
++            const batched = textOnly ? undefined : splitBatchedCommands(params.command)
++            if (batched) {
++                return runReadOnlyBatch(batched, {
++                    findTool: async (name) =>
++                        findTool(
++                            await resolveTools(),
++                            scopeGatedTools,
++                            flagGatedTools,
++                            name,
++                            context,
++                            isNotGranted,
++                            options.oauthClientId
++                        ),
++                    runCommand: (command) => execHandler(_context, { command }, true),
++                    trackCommand: options.trackCommand,
++                })
++            }
++
+             switch (verb) {
+                 case 'help':
+                     return execHelp(rest, options.learnCatalog !== undefined)
+@@ -2373,7 +2503,7 @@ export function createExecTool(
+                             output: outputText,
+                             ...resultShape,
+                         })
+-                        if (!includeAppData) {
++                        if (!includeAppData || textOnly) {
+                             return outputText
+                         }
+                         // The model still reads only the wrapped text this branch protects, so a
+@@ -2387,7 +2517,7 @@ export function createExecTool(
+                         })
+                     }
+                     const isInlineUiAppHost = isPostHogCodeConsumer(mcpConsumer) || options.isInlineExecUiHost === true
+-                    if (includeAppData || (tool._meta?.ui?.resourceUri && isInlineUiAppHost)) {
++                    if (!textOnly && (includeAppData || (tool._meta?.ui?.resourceUri && isInlineUiAppHost))) {
+                         const isStringResult = typeof result === 'string'
+                         const distinctId =
+                             !isStringResult && tool._meta?.ui?.resourceUri ? await context.getDistinctId() : undefined
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
+index e3a8a3967c9..51e76020f55 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
+@@ -10,7 +10,7 @@ schema <tool_name> [field_path] — drill into a specific field schema (supports
+ call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+-**One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
++**Batching read-only commands.** Up to 10 read-only commands can share one request, one per line: `help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`. Each result comes back under its own label. A write (any other `call`) or `learn` goes in its own request: a batch holding one is refused before anything in it runs.
+ 
+ **Namespaced references (`posthog:<tool-name>`):** strip the `posthog:` prefix and route through `exec`. Run `info <name>` to inspect, then `call <name> <json>`. E.g. `posthog:insights-list` → `posthog:exec({ "command": "info insights-list" })` then `posthog:exec({ "command": "call insights-list {}" })`. If the bare name isn't found, fall back to `search <pattern>` — it may have been renamed.
+ 
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
+index 746d08269da..c2c40b86a4c 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
+@@ -10,7 +10,7 @@ schema <tool_name> [field_path] — drill into a specific field schema (supports
+ call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+-**One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
++**Batching read-only commands.** Up to 10 read-only commands can share one request, one per line: `help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`. Each result comes back under its own label. A write (any other `call`) or `learn` goes in its own request: a batch holding one is refused before anything in it runs.
+ 
+ **Namespaced references (`posthog:<tool-name>`):** strip the `posthog:` prefix and route through `exec`. Run `info <name>` to inspect, then `call <name> <json>`. E.g. `posthog:insights-list` → `posthog:exec({ "command": "info insights-list" })` then `posthog:exec({ "command": "call insights-list {}" })`. If the bare name isn't found, fall back to `search <pattern>` — it may have been renamed.
+ 
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+index 709789394d2..8add0563c29 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+@@ -9,7 +9,7 @@ schema <tool_name> [field_path] — drill into a specific field schema (supports
+ call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+-**One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
++**Batching read-only commands.** Up to 10 read-only commands can share one request, one per line: `help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`. Each result comes back under its own label. A write (any other `call`) or `learn` goes in its own request: a batch holding one is refused before anything in it runs.
+ 
+ **Namespaced references (`posthog:<tool-name>`):** strip the `posthog:` prefix and route through `exec`. Run `info <name>` to inspect, then `call <name> <json>`. E.g. `posthog:insights-list` → `posthog:exec({ "command": "info insights-list" })` then `posthog:exec({ "command": "call insights-list {}" })`. If the bare name isn't found, fall back to `search <pattern>` — it may have been renamed.
+ 
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt
+index 3b6572b55bd..216285d65ff 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt
+@@ -43,6 +43,8 @@ posthog:exec({ "command": "call --json <tool_name> <json_input>" })
+ - Oversized sub-schemas are also summarized with a `note` to drill further.
+ - Unknown paths return an error listing available child paths.
+ 
++**Batching:** read-only commands (`help`, `tools`, `search`, `info`, `schema`, and `call` on a tool annotated `readOnlyHint: true`) can share one request, one command per line; each result comes back labelled. A write always goes in its own request.
++
+ **Not supported:**
+ 
+ - `search` matches tool metadata only, not input schemas.
+diff --git a/services/mcp/tests/unit/exec.test.ts b/services/mcp/tests/unit/exec.test.ts
+index c55ad26c854..83b81368691 100644
+--- a/services/mcp/tests/unit/exec.test.ts
++++ b/services/mcp/tests/unit/exec.test.ts
+@@ -24,6 +24,7 @@ import {
+     type ExecInnerCallProperties,
+     type ExecToolOptions,
+     formatInputValidationError,
++    MAX_BATCH_COMMANDS,
+     rewrapFlattenedArguments,
+     parseExecCallInnerToolName,
+ } from '@/tools/exec'
+@@ -1464,13 +1465,81 @@ describe('exec tool', () => {
+     })
+ 
+     describe('batched commands', () => {
+-        it.each([
+-            ['info mock-tool\ninfo other-tool', 2],
+-            ['search flags\ncall mock-tool {}\ninfo mock-tool', 3],
+-        ])('rejects %j and names each command', async (command, expected) => {
++        const writeTool = (handler = vi.fn(async () => ({ ok: true }))): Tool<ZodObjectAny> =>
++            makeMockTool({
++                name: 'write-tool',
++                annotations: {
++                    destructiveHint: false,
++                    idempotentHint: false,
++                    openWorldHint: false,
++                    readOnlyHint: false,
++                },
++                handler,
++            })
++
++        it('runs several read-only commands and labels each result', async () => {
++            const exec = createExec([makeMockTool(), writeTool()])
++            const result = (await exec.handler(mockContext, {
++                command: 'search mock\ninfo mock-tool\ncall mock-tool {}',
++            })) as string
++            expect(result).toMatch(/^### \[1\/3\] search mock\n/)
++            expect(result).toContain('### [2/3] info mock-tool\nname: mock-tool')
++            expect(result).toContain('### [3/3] call mock-tool {}\nid: 1')
++        })
++
++        it('returns a failing command as an error in its place and still runs the rest', async () => {
++            const exec = createExec()
++            const result = (await exec.handler(mockContext, { command: 'info other-tool\ninfo mock-tool' })) as string
++            expect(result).toContain('### [1/2] info other-tool\nError: [exec]: Unknown tool: "other-tool"')
++            expect(result).toContain('### [2/2] info mock-tool\nname: mock-tool')
++        })
++
++        it('refuses the whole batch when it holds a call to a tool that is not read-only, and runs nothing', async () => {
++            const readHandler = vi.fn(async () => ({ ok: true }))
++            const writeHandler = vi.fn(async () => ({ ok: true }))
++            const exec = createExec([makeMockTool({ handler: readHandler }), writeTool(writeHandler)])
++            await expect(
++                exec.handler(mockContext, { command: 'call mock-tool {}\ncall write-tool {"a": 1}' })
++            ).rejects.toThrow(
++                /exec batches read-only commands only\. Nothing ran\.[\s\S]*"write-tool" is not a read-only tool/
++            )
++            expect(readHandler).not.toHaveBeenCalled()
++            expect(writeHandler).not.toHaveBeenCalled()
++        })
++
++        it('refuses a write reached through an alias as well', async () => {
++            const writeHandler = vi.fn(async () => ({ ok: true }))
++            const exec = createExec([
++                makeMockTool(),
++                makeMockTool({
++                    name: 'create-widget',
++                    annotations: {
++                        destructiveHint: false,
++                        idempotentHint: false,
++                        openWorldHint: false,
++                        readOnlyHint: false,
++                    },
++                    handler: writeHandler,
++                }),
++            ])
++            await expect(
++                exec.handler(mockContext, { command: 'info mock-tool\ncall widget-create {}' })
++            ).rejects.toThrow(/"create-widget" is not a read-only tool/)
++            expect(writeHandler).not.toHaveBeenCalled()
++        })
++
++        it('keeps learn out of a batch', async () => {
++            const exec = createExec()
++            await expect(exec.handler(mockContext, { command: 'info mock-tool\nlearn analytics' })).rejects.toThrow(
++                /"learn" runs one per request/
++            )
++        })
++
++        it(`refuses a batch of more than ${MAX_BATCH_COMMANDS} commands`, async () => {
+             const exec = createExec()
++            const command = Array.from({ length: MAX_BATCH_COMMANDS + 1 }, () => 'info mock-tool').join('\n')
+             await expect(exec.handler(mockContext, { command })).rejects.toThrow(
+-                `exec runs one command per request, and this request held ${expected}.`
++                `a batch holds at most ${MAX_BATCH_COMMANDS}. Nothing ran.`
+             )
+         })
+ 
+-- 
+2.50.1 (Apple Git-155)
+

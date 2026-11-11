@@ -1,0 +1,121 @@
+From d2cd32e1c175e77c0b0159ac90b34dc127873372 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:57:01 -0700
+Subject: [PATCH] fix(mcp): stop hinting at tools gated on server-minted scopes
+
+exec search tells a caller which matching tools are hidden by a missing
+scope and how to get it: reauthorize, or add the scope to the key. Tools
+that need a server-minted scope were listed too, although no user can hold
+one, not even with a full-access key. The advice could never work.
+
+getScopeGatedTools now leaves those tools out, as it already does for
+staff-only tools.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/lib/api.ts                   |  9 +++++--
+ services/mcp/src/tools/toolDefinitions.ts     | 10 ++++++--
+ .../mcp/tests/unit/tool-filtering.test.ts     | 24 ++++++++++++++++++-
+ 3 files changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/services/mcp/src/lib/api.ts b/services/mcp/src/lib/api.ts
+index f60d633877b..03a403258f7 100644
+--- a/services/mcp/src/lib/api.ts
++++ b/services/mcp/src/lib/api.ts
+@@ -10,9 +10,14 @@ const SERVER_MINT_ONLY_SCOPE_OBJECTS = new Set([
+     'signal_scratchpad_internal',
+ ])
+ 
++/** A scope only the server mints. No reauthorization or key edit lets a user hold it. */
++export const isServerMintOnlyScope = (scope: string): boolean => {
++    const scopeObject = scope.split(':', 1)[0]
++    return scopeObject !== undefined && SERVER_MINT_ONLY_SCOPE_OBJECTS.has(scopeObject)
++}
++
+ const holdsScope = (scopes: string[], requiredScope: string): boolean => {
+-    const scopeObject = requiredScope.split(':', 1)[0]
+-    const isServerMintOnly = scopeObject !== undefined && SERVER_MINT_ONLY_SCOPE_OBJECTS.has(scopeObject)
++    const isServerMintOnly = isServerMintOnlyScope(requiredScope)
+ 
+     // A user-consented `*` must never reach a server-minted scope object. Only the wildcard is
+     // withheld — the read/write rule below still applies, so this stays in step with the Django
+diff --git a/services/mcp/src/tools/toolDefinitions.ts b/services/mcp/src/tools/toolDefinitions.ts
+index 02b8d5a060c..21c999ee931 100644
+--- a/services/mcp/src/tools/toolDefinitions.ts
++++ b/services/mcp/src/tools/toolDefinitions.ts
+@@ -1,6 +1,6 @@
+ import z from 'zod'
+ 
+-import { hasScope, hasScopes } from '@/lib/api'
++import { hasScope, hasScopes, isServerMintOnlyScope } from '@/lib/api'
+ import { OAUTH_SCOPES_SUPPORTED } from '@/lib/oauth-scopes.generated'
+ import type { EvaluatedFlags } from '@/lib/posthog/flags'
+ import { isStaffOnlyTool } from '@/lib/staff-only-tools'
+@@ -424,12 +424,18 @@ export function getScopeGatedTools(scopes: string[], options?: ToolFilterOptions
+         if (isStaffOnlyTool(required)) {
+             continue
+         }
++        const missingScopes = required.filter((scope) => !hasScope(scopes, scope))
++        // The hint tells the caller to reauthorize or edit their key. Neither can add a
++        // server-minted scope, so for these tools the advice could never work.
++        if (missingScopes.some(isServerMintOnlyScope)) {
++            continue
++        }
+         gated.push({
+             name,
+             title: definition.title,
+             description: definition.description,
+             searchKeywords: definition.search_keywords,
+-            missingScopes: required.filter((scope) => !hasScope(scopes, scope)),
++            missingScopes,
+             requiredScopes: required,
+         })
+     }
+diff --git a/services/mcp/tests/unit/tool-filtering.test.ts b/services/mcp/tests/unit/tool-filtering.test.ts
+index d2b35074b26..cb1c129dd2a 100644
+--- a/services/mcp/tests/unit/tool-filtering.test.ts
++++ b/services/mcp/tests/unit/tool-filtering.test.ts
+@@ -1,6 +1,6 @@
+ import { describe, expect, it } from 'vitest'
+ 
+-import { hasScope } from '@/lib/api'
++import { hasScope, isServerMintOnlyScope } from '@/lib/api'
+ import { OAUTH_SCOPES_HIDDEN, OAUTH_SCOPES_SUPPORTED } from '@/lib/constants'
+ import type { EvaluatedFlags } from '@/lib/posthog/flags'
+ import { SessionManager } from '@/lib/SessionManager'
+@@ -10,6 +10,7 @@ import {
+     getFlagGatedTools,
+     getToolDefinitions,
+     getRequiredFeatureFlags,
++    getScopeGatedTools,
+     getToolsForFeatures,
+     type ToolDefinition,
+     toolPassesEntitlementGate,
+@@ -698,6 +699,27 @@ describe('server-minted scope matching', () => {
+     })
+ })
+ 
++describe('getScopeGatedTools', () => {
++    // The search hint built from this list says to reauthorize or add the scope to the key.
++    // A user can do neither for a server-minted scope, not even with a full-access key.
++    it.each([{ scopes: ['*'] }, { scopes: ['insight:read'] }])(
++        'never lists a tool whose missing scope only the server can mint: $scopes',
++        ({ scopes }) => {
++            const serverMinted = getScopeGatedTools(scopes).filter((tool) =>
++                tool.missingScopes.some(isServerMintOnlyScope)
++            )
++
++            expect(serverMinted.map((tool) => tool.name)).toEqual([])
++        }
++    )
++
++    it('still lists a tool the caller could unlock by adding a scope', () => {
++        const gated = getScopeGatedTools(['insight:read'])
++
++        expect(gated.find((tool) => tool.name === 'dashboard-create')?.missingScopes).toEqual(['dashboard:write'])
++    })
++})
++
+ describe('getAdvertisedOAuthScopes', () => {
+     const supported = new Set<string>(OAUTH_SCOPES_SUPPORTED)
+     const advertised = getAdvertisedOAuthScopes()

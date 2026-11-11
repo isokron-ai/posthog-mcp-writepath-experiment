@@ -1,3 +1,8 @@
+> **PostHog MCP server write-path experiment (unofficial).** This repository is an independent research build by
+> [IsoKron](https://isokron.ai) based on the MCP server in `PostHog/posthog` (`services/mcp`) at commit `7b516983`. It holds
+> only the part of PostHog's monorepo needed to build that server. It is not affiliated with or endorsed by PostHog and is
+> not a supported distribution. Read [EXPERIMENT.md](EXPERIMENT.md) first; PostHog's README follows unchanged.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/posthog-logo-dark.svg">

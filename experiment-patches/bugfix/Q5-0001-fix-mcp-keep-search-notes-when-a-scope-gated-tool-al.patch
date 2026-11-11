@@ -1,0 +1,149 @@
+From 8bf0eeba30861b51fee411e2360c08483bdfb0bf Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:55:28 -0700
+Subject: [PATCH] fix(mcp): keep search notes when a scope-gated tool also
+ matches
+
+When an exec search also matched a tool hidden by a missing scope, the
+response was replaced by the scope hint alone. The `truncated` flag, the
+"top 25 of N" note, the metric-catalog hint and the word-fallback note
+were all dropped, so an agent with a restricted key never learned that
+its result page was capped.
+
+The scope-gated matches and their hint are now added to the normal
+response instead of replacing it.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/tools/exec.ts       | 62 ++++++++++++++--------------
+ services/mcp/tests/unit/exec.test.ts | 31 ++++++++++++++
+ 2 files changed, 61 insertions(+), 32 deletions(-)
+
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index 97b15cd09bf..c8a17f940d9 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -1973,51 +1973,49 @@ export function createExecTool(
+                         exec_search_gateway_match_count: matchedNames.filter(isGatewayToolName).length,
+                     })
+ 
+-                    if (gatedMatches.length > 0) {
+-                        const requiredScopes = [...new Set(gatedMatches.flatMap((t) => t.missingScopes))].sort()
+-                        return JSON.stringify({
+-                            matches,
+-                            scope_gated_matches: gatedMatches.map((t) => ({
+-                                name: t.name,
+-                                missing_scopes: t.missingScopes,
+-                            })),
+-                            hint:
+-                                `These tools also match but are hidden because the API key is missing the ` +
+-                                `required scope(s): ${requiredScopes.join(', ')}. ${missingScopeRecovery(context, options.oauthClientId)}`,
+-                        })
+-                    }
++                    // Scope-gated matches are reported next to the usual notes, not instead of
++                    // them: a capped page is still capped when a hidden tool also matched.
++                    const gated =
++                        gatedMatches.length > 0
++                            ? {
++                                  scope_gated_matches: gatedMatches.map((t) => ({
++                                      name: t.name,
++                                      missing_scopes: t.missingScopes,
++                                  })),
++                              }
++                            : {}
++                    const gatedHint =
++                        gatedMatches.length > 0
++                            ? `These tools also match but are hidden because the API key is missing the ` +
++                              `required scope(s): ${[...new Set(gatedMatches.flatMap((t) => t.missingScopes))].sort().join(', ')}. ${missingScopeRecovery(context, options.oauthClientId)}`
++                            : undefined
+                     if (matches.length === 0) {
+                         return JSON.stringify({
+                             matches: [],
+-                            hint: `No tools matched "${query}". Search again with plain words that describe the task, for example "create dashboard". Run "tools" only if that also finds nothing.`,
++                            ...gated,
++                            hint:
++                                gatedHint ??
++                                `No tools matched "${query}". Search again with plain words that describe the task, for example "create dashboard". Run "tools" only if that also finds nothing.`,
+                         })
+                     }
+                     const fallbackHint =
+                         fallbackFrom === undefined
+                             ? undefined
+                             : `No tool is named "${fallbackFrom}". These are the closest matches by its words.`
+-                    if (truncatedFrom > 0) {
+-                        const catalogHint = catalogDiscoveryHint(
+-                            allTools,
+-                            namesMatchingSearch(matchedNames, searchTerm)
+-                        )
++                    const catalogHint = catalogDiscoveryHint(allTools, namesMatchingSearch(matchedNames, searchTerm))
++                    const truncationHint =
++                        truncatedFrom > 0
++                            ? `Showing the top ${MAX_RANKED_SEARCH_RESULTS} of ${truncatedFrom} matches, ranked by relevance. Use a more specific query to narrow the results.`
++                            : undefined
++                    const hint = [fallbackHint, catalogHint, truncationHint, gatedHint].filter(Boolean).join(' ')
++                    if (hint) {
+                         return JSON.stringify({
+                             matches,
+-                            truncated: true,
+-                            hint: [
+-                                fallbackHint,
+-                                catalogHint,
+-                                `Showing the top ${MAX_RANKED_SEARCH_RESULTS} of ${truncatedFrom} matches, ranked by relevance. Use a more specific query to narrow the results.`,
+-                            ]
+-                                .filter(Boolean)
+-                                .join(' '),
++                            ...(truncatedFrom > 0 ? { truncated: true } : {}),
++                            ...gated,
++                            hint,
+                         })
+                     }
+-                    const catalogHint = catalogDiscoveryHint(allTools, namesMatchingSearch(matchedNames, searchTerm))
+-                    const hint = [fallbackHint, catalogHint].filter(Boolean).join(' ')
+-                    if (hint) {
+-                        return JSON.stringify({ matches, hint })
+-                    }
+                     return JSON.stringify(matches)
+                 }
+ 
+diff --git a/services/mcp/tests/unit/exec.test.ts b/services/mcp/tests/unit/exec.test.ts
+index af5194ae7a1..2832b1de8c0 100644
+--- a/services/mcp/tests/unit/exec.test.ts
++++ b/services/mcp/tests/unit/exec.test.ts
+@@ -1941,6 +1941,37 @@ describe('exec tool', () => {
+             expect(result.hint).toContain('30')
+         })
+ 
++        // A hidden tool that also matches used to replace the whole response, so the
++        // agent never learned the page was capped or which catalog tools to check first.
++        it('keeps the truncation note and catalog hint when a scope-gated tool also matches', async () => {
++            const tools = [
++                ...Array.from({ length: 30 }, (_, i) =>
++                    makeMockTool({ name: `billing-tool-${i}`, title: `Billing tool ${i}` })
++                ),
++                makeMockTool({ name: 'metric-list' }),
++                makeMockTool({ name: 'metric-describe' }),
++                makeMockTool({ name: 'data-catalog-metric-run' }),
++            ]
++            const exec = createExecTool(tools, mockContext, 'desc', 'cmd', undefined, undefined, [
++                {
++                    name: 'billing-export',
++                    title: 'Export billing',
++                    description: 'Export billing data',
++                    missingScopes: ['billing:write'],
++                    requiredScopes: ['billing:write'],
++                },
++            ])
++
++            const result = JSON.parse((await exec.handler(mockContext, { command: 'search billing' })) as string)
++
++            expect(result.matches).toHaveLength(25)
++            expect(result.truncated).toBe(true)
++            expect(result.hint).toContain('Showing the top 25 of 30 matches')
++            expect(result.hint).toContain('metric-list')
++            expect(result.scope_gated_matches).toEqual([{ name: 'billing-export', missing_scopes: ['billing:write'] }])
++            expect(result.hint).toContain('billing:write')
++        })
++
+         it('reports an invalid regex gracefully', async () => {
+             const exec = createExec([makeMockTool()])
+             await expect(exec.handler(mockContext, { command: 'search [invalid' })).rejects.toThrow(

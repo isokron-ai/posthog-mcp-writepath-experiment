@@ -1,0 +1,6 @@
+# IsoKron experiment repository (PostHog's own root .gitignore is not part of the imported subset)
+node_modules/
+services/mcp/dist/
+services/mcp/shared/
+.DS_Store
+*.log

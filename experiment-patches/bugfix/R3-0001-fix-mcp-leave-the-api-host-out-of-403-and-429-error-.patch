@@ -1,0 +1,100 @@
+From 9ffa6101cf6d8300144c47f09fba0ae405b00da2 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 20:03:48 -0700
+Subject: [PATCH] fix(mcp): leave the api host out of 403 and 429 error
+ messages
+
+The default API error message names the request path without the upstream
+host, because an agent cannot act on the host. The permission (403) and
+rate-limit (429) messages still printed the full request URL.
+
+Both now use the same path-only form.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/lib/errors.ts                |  4 ++--
+ .../mcp/tests/unit/permission-errors.test.ts  | 24 ++++++++++++++++++-
+ .../mcp/tests/unit/rate-limit-errors.test.ts  | 13 ++++++++++
+ 3 files changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/services/mcp/src/lib/errors.ts b/services/mcp/src/lib/errors.ts
+index faf432cbf85..2afbd5e45b7 100644
+--- a/services/mcp/src/lib/errors.ts
++++ b/services/mcp/src/lib/errors.ts
+@@ -309,7 +309,7 @@ export class PostHogRateLimitError extends PostHogApiError {
+             url: options.url,
+             method: options.method,
+             retryAfterSeconds: options.retryAfterSeconds,
+-            message: `PostHog API rate limit exceeded (429) on ${options.method} ${options.url}.${retryHint}`,
++            message: `PostHog API rate limit exceeded (429) on ${options.method} ${requestPath(options.url)}.${retryHint}`,
+         })
+         this.name = 'PostHogRateLimitError'
+     }
+@@ -436,7 +436,7 @@ export function wrapError(message: string, cause: unknown): Error {
+ const PERSONAL_API_KEY_DOCS_URL = 'https://posthog.com/docs/api#how-to-authenticate-with-the-posthog-api'
+ 
+ export function formatPermissionErrorMessage(error: PostHogPermissionError): string {
+-    const callTarget = error.method && error.url ? `${error.method} ${error.url}` : 'this MCP request'
++    const callTarget = error.method && error.url ? `${error.method} ${requestPath(error.url)}` : 'this MCP request'
+     if (error.missingScope) {
+         return [
+             `Missing PostHog API scope: '${error.missingScope}'`,
+diff --git a/services/mcp/tests/unit/permission-errors.test.ts b/services/mcp/tests/unit/permission-errors.test.ts
+index b58be5656e2..684dadedb42 100644
+--- a/services/mcp/tests/unit/permission-errors.test.ts
++++ b/services/mcp/tests/unit/permission-errors.test.ts
+@@ -69,7 +69,29 @@ describe('formatPermissionErrorMessage', () => {
+ 
+         expect(text).toContain("'user:read'")
+         expect(text).toContain('MCP Server')
+-        expect(text).toContain('GET https://us.posthog.com/api/users/@me/')
++        expect(text).toContain('GET /api/users/@me/')
++    })
++
++    // The API host is the upstream the server talks to, which can be an internal address.
++    // An agent cannot act on it, and the default error message already leaves it out.
++    it.each([
++        ['a missing scope', { detail: "API key missing required scope 'user:read'", missingScope: 'user:read' }],
++        [
++            'a project-scoped token on an organization endpoint',
++            { detail: 'API keys with scoped projects are only supported on project-based endpoints.' },
++        ],
++        ['a generic denial', { detail: 'team access denied' }],
++    ])('names the request path without the upstream host for %s', (_label, options) => {
++        const error = new PostHogPermissionError({
++            ...options,
++            url: 'https://internal.example.com/api/projects/2/insights/?limit=1',
++            method: 'GET',
++        })
++
++        const text = formatPermissionErrorMessage(error)
++
++        expect(text).toContain('GET /api/projects/2/insights/?limit=1')
++        expect(text).not.toContain('internal.example.com')
+     })
+ 
+     it('falls back to generic remediation when no scope is parsed', () => {
+diff --git a/services/mcp/tests/unit/rate-limit-errors.test.ts b/services/mcp/tests/unit/rate-limit-errors.test.ts
+index 40f5ec00723..0ab2e901409 100644
+--- a/services/mcp/tests/unit/rate-limit-errors.test.ts
++++ b/services/mcp/tests/unit/rate-limit-errors.test.ts
+@@ -82,6 +82,19 @@ describe('outbound 429 handling', () => {
+             expect(error.retryAfterSeconds).toBeNull()
+             expect(error.message).not.toContain('Retry after')
+         })
++
++        it('names the request path without the upstream host', () => {
++            const error = new PostHogRateLimitError({
++                body: '{}',
++                url: 'https://internal.example.com/api/environments/2/query/?refresh=true',
++                method: 'POST',
++                retryAfterSeconds: null,
++            })
++
++            expect(error.message).toBe(
++                'PostHog API rate limit exceeded (429) on POST /api/environments/2/query/?refresh=true.'
++            )
++        })
+     })
+ 
+     describe('ApiClient on 429', () => {

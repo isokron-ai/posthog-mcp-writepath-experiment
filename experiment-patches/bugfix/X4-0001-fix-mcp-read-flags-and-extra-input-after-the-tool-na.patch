@@ -1,0 +1,134 @@
+From 685efb8f2ac866ccde3095e546fc2db97c182cf0 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:53:03 -0700
+Subject: [PATCH] fix(mcp): read flags and extra input after the tool name in
+ exec info
+
+`info` looked up everything after the verb as one tool name. With
+`info <tool> --json`, or any extra word, the agent was told an existing
+tool was unknown and was pointed at a search for the name plus the extra
+text.
+
+`info` now accepts `--json` after the tool name, as `call` does, and
+rejects other trailing input with a usage error that names it.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/tools/exec.ts       | 35 ++++++++++++++++++++++------
+ services/mcp/tests/unit/exec.test.ts | 28 +++++++++++++++++++---
+ 2 files changed, 53 insertions(+), 10 deletions(-)
+
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index 97b15cd09bf..5258eb4bf06 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -470,6 +470,20 @@ function parseCallBodyFlags(input: string): { forceJson: boolean; confirmed: boo
+     return { forceJson, confirmed, rest }
+ }
+ 
++/** Reads `--json` written before or after the tool name of an `info` command, as `call` does. */
++function parseInfoArgs(input: string): { forceJson: boolean; target: string } {
++    let target = input.trim()
++    let forceJson = false
++    for (;;) {
++        const stripped = target.replace(/^--json(?=\s|$)/, '').replace(/(?:^|\s)--json$/, '')
++        if (stripped === target) {
++            return { forceJson, target }
++        }
++        forceJson = true
++        target = stripped.trim()
++    }
++}
++
+ // Extracts the inner tool name from an exec `call` command, e.g.
+ // "call my-tool {...}" → "my-tool". Returns undefined for other verbs or
+ // malformed input. Used by analytics to surface the real tool being invoked
+@@ -576,15 +590,14 @@ export function describeExecCommand(command: string, isKnownToolName: (name: str
+     // The target must be parsed exactly as the dispatcher looks it up, or a
+     // rejected command gets attributed to a valid tool. `call` strips its flags
+     // then takes the first token; `schema` takes the first token. `info` is the
+-    // exception: it hands the entire remaining argument to `findTool` as an exact
+-    // name (after an optional `--json`), so `info execute-sql extra` looks up
+-    // "execute-sql extra", resolves to nothing, and records `unrecognized` — not
+-    // the `execute-sql` its first token would suggest.
++    // exception: it takes the entire remaining argument (minus `--json`) as the
++    // name and rejects anything after it, so `info execute-sql extra` records
++    // `unrecognized` — not the `execute-sql` its first token would suggest.
+     let target: string
+     if (rawVerb === 'call') {
+         target = parseCommand(parseCallFlags(rest).rest).verb
+     } else if (rawVerb === 'info') {
+-        target = rest.replace(/^--json(\s+|$)/, '').trim()
++        target = parseInfoArgs(rest).target
+     } else {
+         target = parseCommand(rest).verb
+     }
+@@ -2025,11 +2038,19 @@ export function createExecTool(
+                     if (!rest) {
+                         throw new ExecCommandError('Usage: info [--json] <tool_name>', 'usage')
+                     }
+-                    const forceJson = rest.startsWith('--json ') || rest === '--json'
+-                    const infoArgs = forceJson ? rest.slice('--json'.length).trim() : rest
++                    const { forceJson, target: infoArgs } = parseInfoArgs(rest)
+                     if (!infoArgs) {
+                         throw new ExecCommandError('Usage: info [--json] <tool_name>', 'usage')
+                     }
++                    // No tool name holds whitespace. Looking the whole string up would report
++                    // an unknown tool and suggest a search for the name plus the extra text.
++                    const extraInput = parseCommand(infoArgs)
++                    if (extraInput.rest) {
++                        throw new ExecCommandError(
++                            `Usage: info [--json] <tool_name>. Unexpected input after "${extraInput.verb}": "${extraInput.rest}". To inspect one field, run "schema ${extraInput.verb} <field_path>".`,
++                            'usage'
++                        )
++                    }
+                     const tool = findTool(
+                         await resolveTools(),
+                         scopeGatedTools,
+diff --git a/services/mcp/tests/unit/exec.test.ts b/services/mcp/tests/unit/exec.test.ts
+index af5194ae7a1..53039728812 100644
+--- a/services/mcp/tests/unit/exec.test.ts
++++ b/services/mcp/tests/unit/exec.test.ts
+@@ -1444,6 +1444,28 @@ describe('exec tool', () => {
+             expect(typeof parsed.inputSchema).toBe('object')
+         })
+ 
++        // `call` accepts its flags after the tool name, so agents write `info` the same way.
++        it.each(['info mock-tool --json', 'info --json mock-tool --json'])(
++            'accepts --json after the tool name in %j',
++            async (command) => {
++                const exec = createExec()
++                const result = (await exec.handler(mockContext, { command })) as string
++                expect(JSON.parse(result).name).toBe('mock-tool')
++            }
++        )
++
++        // Extra text used to be looked up as part of the name, so an existing tool came
++        // back as unknown with a hint to search for the name plus the extra text.
++        it.each([
++            ['info mock-tool name', 'Unexpected input after "mock-tool": "name"'],
++            ['info mock-tool --verbose', 'Unexpected input after "mock-tool": "--verbose"'],
++            ['info --json mock-tool name', 'Unexpected input after "mock-tool": "name"'],
++        ])('rejects %j as a usage error that names the extra input', async (command, expected) => {
++            const call = createExec().handler(mockContext, { command })
++            await expect(call).rejects.toMatchObject({ reason: 'usage' })
++            await expect(call).rejects.toThrow(expected)
++        })
++
+         it('bakes the drill-down imperative into each complex field hint when info is summarized', async () => {
+             const wideShape: Record<string, z.ZodType> = {}
+             for (let i = 0; i < 1500; i++) {
+@@ -2260,10 +2282,10 @@ describe('exec tool', () => {
+             ['search query-', 'search', undefined],
+             ['info execute-sql', 'info', 'execute-sql'],
+             ['info --json execute-sql', 'info', 'execute-sql'],
++            ['info execute-sql --json', 'info', 'execute-sql'],
+             ['schema query-trends series', 'schema', 'query-trends'],
+-            // `info` matches the whole remainder as an exact tool name, so a
+-            // trailing token makes the lookup fail — telemetry must mirror the
+-            // dispatcher's rejection, not credit the valid first token.
++            // `info` takes one tool name and rejects anything after it — telemetry
++            // must mirror the dispatcher's rejection, not credit the valid first token.
+             ['info execute-sql extra', 'info', 'unrecognized'],
+             ['call my-tool {"a":1}', 'call', 'my-tool'],
+             ['call --json --confirm my-tool {}', 'call', 'my-tool'],

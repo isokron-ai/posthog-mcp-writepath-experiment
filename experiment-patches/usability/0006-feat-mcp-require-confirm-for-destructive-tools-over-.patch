@@ -1,0 +1,199 @@
+From ed12abd7a0a528040a9edf65daee228cc2d77160 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:53:34 -0700
+Subject: [PATCH 06/17] feat(mcp): require --confirm for destructive tools over
+ MCP
+
+The command reference says --confirm is required for destructive tools,
+but only the agent CLI enforced it: over MCP, insight-delete ran without
+the flag (friction report P20, calls #101-#105).
+
+exec now refuses a call to a tool annotated destructiveHint unless it
+carries --confirm, on every surface. The refusal says nothing ran and
+gives the exact command to re-run. A caller that confirms destructive
+calls another way can still pass requireDestructiveConfirmation: false.
+Connected (gateway) tools that do not declare themselves non-destructive
+count as destructive, which is the MCP default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/exec-command-reference.md |  2 +-
+ .../mcp/src/templates/sections/cli-syntax.md  |  2 +-
+ services/mcp/src/tools/exec.ts                | 10 ++++--
+ ...c-command-reference-claude-chat-skills.txt |  2 +-
+ .../exec-command-reference-claude-chat.txt    |  2 +-
+ .../exec-command-reference-full.txt           |  2 +-
+ services/mcp/tests/unit/exec.test.ts          | 35 +++++++++++++++++++
+ services/mcp/tests/unit/gateway-tools.test.ts |  9 ++++-
+ 8 files changed, 56 insertions(+), 8 deletions(-)
+
+diff --git a/services/mcp/schema/exec-command-reference.md b/services/mcp/schema/exec-command-reference.md
+index 93d38bb8d85..833688dee16 100644
+--- a/services/mcp/schema/exec-command-reference.md
++++ b/services/mcp/schema/exec-command-reference.md
+@@ -11,7 +11,7 @@ tools — list available tool names
+ search <words or regex_pattern> — find tools by name, title, or description
+ info [--json] <tool_name> — show tool name, description, and input schema (summarized if too large). Pass `--json` for raw JSON output.
+ schema <tool_name> [field_path] — drill into a specific field schema (supports dot-notation, e.g. series, breakdownFilter.breakdowns)
+-call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required by the CLI for destructive tools.)
++call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+ **One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
+diff --git a/services/mcp/src/templates/sections/cli-syntax.md b/services/mcp/src/templates/sections/cli-syntax.md
+index 10eb088e7bc..35964624fbf 100644
+--- a/services/mcp/src/templates/sections/cli-syntax.md
++++ b/services/mcp/src/templates/sections/cli-syntax.md
+@@ -6,7 +6,7 @@ help [command] — list commands or show usage for one command
+ search <words or regex_pattern> — find tools by name, title, or description
+ info [--json] <tool_name> — show tool name, description, and input schema (summarized if too large). Pass `--json` for raw JSON output.
+ schema <tool_name> [field_path] — drill into a specific field schema (supports dot-notation, e.g. series, breakdownFilter.breakdowns)
+-call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required by the CLI for destructive tools.)
++call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+ **One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index fea8da69b3e..c6c2a2c867f 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -263,6 +263,11 @@ export function classifyLearnCommand(
+ }
+ 
+ export interface ExecToolOptions {
++    /**
++     * Refuse a `call` to a tool annotated destructive unless it carries `--confirm`.
++     * On by default, over MCP as well as in the agent CLI, as the command reference says;
++     * pass false only for a caller that confirms destructive calls some other way.
++     */
+     requireDestructiveConfirmation?: boolean
+     learnCatalog?: ExecLearnCatalog
+     /**
+@@ -1824,6 +1829,7 @@ export function createExecTool(
+ ): Tool<ExecSchema> {
+     const ExecSchema = makeExecSchema(commandReference)
+     const flagGatedTools = options.flagGatedTools ?? []
++    const requireDestructiveConfirmation = options.requireDestructiveConfirmation ?? true
+ 
+     return {
+         name: 'exec',
+@@ -2196,9 +2202,9 @@ export function createExecTool(
+                         isNotGranted,
+                         options.oauthClientId
+                     )
+-                    if (options.requireDestructiveConfirmation && tool.annotations.destructiveHint && !confirmed) {
++                    if (requireDestructiveConfirmation && tool.annotations?.destructiveHint && !confirmed) {
+                         throw new ExecCommandError(
+-                            `Tool "${tool.name}" is destructive. Re-run with "call --confirm ${tool.name} ..." after verifying the target IDs. Use "info ${tool.name}" to inspect the tool first.`,
++                            `Tool "${tool.name}" is destructive (it deletes or overwrites data), so the call needs --confirm. Nothing ran. Check the target IDs with the user's request, then re-run it as "call --confirm ${tool.name} <json_input>".`,
+                             'needs_confirmation'
+                         )
+                     }
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
+index 2ba6822857d..bb9bbe70e2c 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
+@@ -7,7 +7,7 @@ tools — list available tool names
+ search <words or regex_pattern> — find tools by name, title, or description
+ info [--json] <tool_name> — show tool name, description, and input schema (summarized if too large). Pass `--json` for raw JSON output.
+ schema <tool_name> [field_path] — drill into a specific field schema (supports dot-notation, e.g. series, breakdownFilter.breakdowns)
+-call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required by the CLI for destructive tools.)
++call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+ **One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
+index 7797f5dc16a..8b2d90c0c9a 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
+@@ -7,7 +7,7 @@ tools — list available tool names
+ search <words or regex_pattern> — find tools by name, title, or description
+ info [--json] <tool_name> — show tool name, description, and input schema (summarized if too large). Pass `--json` for raw JSON output.
+ schema <tool_name> [field_path] — drill into a specific field schema (supports dot-notation, e.g. series, breakdownFilter.breakdowns)
+-call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required by the CLI for destructive tools.)
++call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+ **One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+index 7147d371e17..7be65420530 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+@@ -6,7 +6,7 @@ tools — list available tool names
+ search <words or regex_pattern> — find tools by name, title, or description
+ info [--json] <tool_name> — show tool name, description, and input schema (summarized if too large). Pass `--json` for raw JSON output.
+ schema <tool_name> [field_path] — drill into a specific field schema (supports dot-notation, e.g. series, breakdownFilter.breakdowns)
+-call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required by the CLI for destructive tools.)
++call [--json] [--confirm] <tool_name> [json_input] — call a tool with JSON input (--json returns JSON instead of optimized output in supported tools. Informational responses remain tagged and escaped in both MCP and the agent CLI. --confirm is required for tools annotated destructive; without it the call is refused before it runs.)
+ ```
+ 
+ **One command per request.** `exec` has no batch syntax. A request that stacks several commands on separate lines is rejected before any of them run. To run several commands, send several `exec` calls. You can issue them in parallel.
+diff --git a/services/mcp/tests/unit/exec.test.ts b/services/mcp/tests/unit/exec.test.ts
+index 35b8bafaf07..c55ad26c854 100644
+--- a/services/mcp/tests/unit/exec.test.ts
++++ b/services/mcp/tests/unit/exec.test.ts
+@@ -554,6 +554,41 @@ describe('exec tool', () => {
+             )
+         })
+ 
++        it('requires --confirm for destructive tools by default, as over MCP', async () => {
++            const handler = vi.fn(async () => ({ deleted: true }))
++            const destructive = makeMockTool({
++                annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
++                handler,
++            })
++            const exec = createExec([destructive])
++
++            const refusal = exec.handler(mockContext, { command: 'call mock-tool {}' })
++            await expect(refusal).rejects.toBeInstanceOf(ExecCommandError)
++            await expect(exec.handler(mockContext, { command: 'call mock-tool {}' })).rejects.toThrow(
++                /is destructive \(it deletes or overwrites data\), so the call needs --confirm\. Nothing ran\.[\s\S]*call --confirm mock-tool <json_input>/
++            )
++            expect(handler).not.toHaveBeenCalled()
++
++            await exec.handler(mockContext, { command: 'call --confirm mock-tool {}' })
++            expect(handler).toHaveBeenCalledTimes(1)
++        })
++
++        it('runs a destructive tool without --confirm only for a caller that opted out', async () => {
++            const handler = vi.fn(async () => ({ deleted: true }))
++            const destructive = makeMockTool({
++                annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
++                handler,
++            })
++            const exec = createExec([destructive], undefined, { requireDestructiveConfirmation: false })
++            await exec.handler(mockContext, { command: 'call mock-tool {}' })
++            expect(handler).toHaveBeenCalledTimes(1)
++        })
++
++        it('does not ask for --confirm on a tool that is not destructive', async () => {
++            const exec = createExec()
++            await expect(exec.handler(mockContext, { command: 'call mock-tool {}' })).resolves.toContain('id: 1')
++        })
++
+         it('keeps UI data in structuredContent (not _meta) when the tool has no formatted table', async () => {
+             const tool = makeMockTool({
+                 _meta: { ui: { resourceUri: 'ui://posthog/mock-app.html' } },
+diff --git a/services/mcp/tests/unit/gateway-tools.test.ts b/services/mcp/tests/unit/gateway-tools.test.ts
+index 9ae76457bd3..33ad0a609fb 100644
+--- a/services/mcp/tests/unit/gateway-tools.test.ts
++++ b/services/mcp/tests/unit/gateway-tools.test.ts
+@@ -204,7 +204,14 @@ describe('gateway tools', () => {
+         const found = await exec.handler(mockContext(), { command: 'search create issue' })
+         expect(found).toContain('linear__create_issue')
+ 
+-        await exec.handler(mockContext(), { command: 'call linear__create_issue {"title":"Bug"}' })
++        // A connected tool that does not declare itself non-destructive counts as destructive
++        // (the MCP default), so it needs --confirm like a catalog tool.
++        await expect(
++            exec.handler(mockContext(), { command: 'call linear__create_issue {"title":"Bug"}' })
++        ).rejects.toThrow(/needs --confirm/)
++        expect(handler).not.toHaveBeenCalled()
++
++        await exec.handler(mockContext(), { command: 'call --confirm linear__create_issue {"title":"Bug"}' })
+         expect(handler).toHaveBeenCalledWith(expect.anything(), { title: 'Bug' })
+     })
+ 
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,558 @@
+From 8bfe7b344589072cea4387bfd3b596c62afd047c Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:59:13 -0700
+Subject: [PATCH 05/17] feat(mcp): list feature flags with a rollout summary
+
+"List flags with their rollout" took 4 calls and 11,229 tokens on the
+friction session (A15): feature-flag-get-all rows carried no rollout,
+the instructions sent the question to SQL (info execute-sql alone was
+10,742 tokens), and system.feature_flags has neither `active` nor
+`tags`, so the tag filter still needed the list tool.
+
+feature-flag-get-all rows already carry `active` and `tags`. They now
+also carry `rollout`, a one-line summary of the release conditions and
+variants, for example
+
+    75% where $browser = Chrome; 100% where friction-plan = pro | variants: control 50%, test 50%
+
+The list response already has `filters`, so this is done in services/mcp
+with no backend change: the include allowlist keeps the condition
+fields the summary needs, and a new afterResponse hook
+(featureFlags/listRolloutHooks) replaces them with the summary.
+Payloads and every other filter field stay out of the row. Adding
+`active` and `tags` columns to system.feature_flags would need a
+backend change and is not done here.
+
+The execute-sql guidance listed flags with
+`SELECT key, name, rollout_percentage FROM system.feature_flags`, whose
+top-level rollout_percentage is a legacy column that was null for both
+flags (B8). The example now selects the release conditions from
+`filters.groups`, says the top-level column is usually null, and points
+at feature-flag-get-all for state, tags and rollout.
+
+The tool description says what each row carries; the generated
+definition JSON is edited to match, because codegen needs the backend
+OpenAPI schema.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ products/feature_flags/mcp/tools.yaml         |  17 ++-
+ .../references/guidelines.md                  |   4 +-
+ .../schema/generated-tool-definitions.json    |   2 +-
+ services/mcp/schema/tool-definitions-all.json |   2 +-
+ .../tools/featureFlags/listRolloutHooks.ts    |   8 ++
+ .../src/tools/featureFlags/rolloutSummary.ts  | 128 +++++++++++++++++
+ .../mcp/src/tools/generated/feature_flags.ts  | 113 ++++++++-------
+ .../unit/feature-flag-list-rollout.test.ts    | 133 ++++++++++++++++++
+ 8 files changed, 353 insertions(+), 54 deletions(-)
+ create mode 100644 services/mcp/src/tools/featureFlags/listRolloutHooks.ts
+ create mode 100644 services/mcp/src/tools/featureFlags/rolloutSummary.ts
+ create mode 100644 services/mcp/tests/unit/feature-flag-list-rollout.test.ts
+
+diff --git a/products/feature_flags/mcp/tools.yaml b/products/feature_flags/mcp/tools.yaml
+index 988c269409c..901acb1259e 100644
+--- a/products/feature_flags/mcp/tools.yaml
++++ b/products/feature_flags/mcp/tools.yaml
+@@ -287,6 +287,7 @@ tools:
+             idempotent: true
+         enrich_url: '{id}'
+         list: true
++        hooks: featureFlags/listRolloutHooks
+         title: Get all feature flags
+         description: >
+             Get feature flags in the current project. Supports list filters including search by feature flag key or name
+@@ -296,8 +297,11 @@ tools:
+             flag with an empty `groups` list in `filters`, even when `feature-flags-status-retrieve` calls it stale.
+             Stale flags are cleanup candidates, not proof that a flag is unused. Disabled flags are not checked for
+             staleness, so `status: ACTIVE` on a disabled flag is expected. Each row carries `status`, `last_called_at`,
+-            `active` and `created_at`. For the reason behind one flag's status, and its rollout summary, use
+-            `feature-flags-status-retrieve`.
++            `active`, `tags`, `created_at` and `rollout`, a one-line summary of its release conditions and variants
++            (for example `75% where $browser = Chrome; 100% of everyone | variants: control 50%, test 50%`), so listing
++            flags with their rollout needs no SQL and no per-flag call. Filter by tag with `tags`. For the reason behind
++            one flag's status, use `feature-flags-status-retrieve`; for the full conditions, use
++            `feature-flag-get-definition`.
+         param_overrides:
+             search:
+                 description:
+@@ -322,6 +326,15 @@ tools:
+                 - last_called_at
+                 - active
+                 - created_at
++                - filters.groups.*.properties.*.key
++                - filters.groups.*.properties.*.type
++                - filters.groups.*.properties.*.operator
++                - filters.groups.*.properties.*.value
++                - filters.groups.*.rollout_percentage
++                - filters.groups.*.variant
++                - filters.multivariate.variants.*.key
++                - filters.multivariate.variants.*.rollout_percentage
++                - filters.aggregation_group_type_index
+     feature-flag-get-definition:
+         operation: feature_flags_retrieve
+         enabled: true
+diff --git a/products/posthog_ai/skills/querying-posthog-data/references/guidelines.md b/products/posthog_ai/skills/querying-posthog-data/references/guidelines.md
+index 0347c0d037b..09ac8dbc938 100644
+--- a/products/posthog_ai/skills/querying-posthog-data/references/guidelines.md
++++ b/products/posthog_ai/skills/querying-posthog-data/references/guidelines.md
+@@ -426,9 +426,11 @@ SELECT id, name, count FROM system.cohorts WHERE name ILIKE '%paying%' AND NOT d
+ **List feature flags:**
+ 
+ ```sql
+-SELECT key, name, rollout_percentage
++SELECT id, key, name, JSONExtractRaw(filters, 'groups') AS release_conditions
+ FROM system.feature_flags
+ WHERE NOT deleted
+ ORDER BY created_at DESC
+ LIMIT 20
+ ```
++
++Each release condition in `filters.groups` carries its own `rollout_percentage`. The top-level `rollout_percentage` column is a legacy field and is usually null, so do not read a flag's rollout from it. `system.feature_flags` has no `active` or `tags` column: to list flags with their state, tags and a one-line rollout summary, call `feature-flag-get-all` instead.
+diff --git a/services/mcp/schema/generated-tool-definitions.json b/services/mcp/schema/generated-tool-definitions.json
+index 81075b9ea3e..0a3e6c1e966 100644
+--- a/services/mcp/schema/generated-tool-definitions.json
++++ b/services/mcp/schema/generated-tool-definitions.json
+@@ -7048,7 +7048,7 @@
+         }
+     },
+     "feature-flag-get-all": {
+-        "description": "Get feature flags in the current project. Supports list filters including search by feature flag key or name (case-insensitive), then use the returned ID for get/update/delete tools. Pass `active: \"STALE\"` to list only stale flags. PostHog calls a flag stale when it is enabled and was last called over 30 days ago, or was never called, is over 30 days old and is rolled out to everyone. The filter does not return a never-called flag with an empty `groups` list in `filters`, even when `feature-flags-status-retrieve` calls it stale. Stale flags are cleanup candidates, not proof that a flag is unused. Disabled flags are not checked for staleness, so `status: ACTIVE` on a disabled flag is expected. Each row carries `status`, `last_called_at`, `active` and `created_at`. For the reason behind one flag's status, and its rollout summary, use `feature-flags-status-retrieve`.",
++        "description": "Get feature flags in the current project. Supports list filters including search by feature flag key or name (case-insensitive), then use the returned ID for get/update/delete tools. Pass `active: \"STALE\"` to list only stale flags. PostHog calls a flag stale when it is enabled and was last called over 30 days ago, or was never called, is over 30 days old and is rolled out to everyone. The filter does not return a never-called flag with an empty `groups` list in `filters`, even when `feature-flags-status-retrieve` calls it stale. Stale flags are cleanup candidates, not proof that a flag is unused. Disabled flags are not checked for staleness, so `status: ACTIVE` on a disabled flag is expected. Each row carries `status`, `last_called_at`, `active`, `tags`, `created_at` and `rollout`, a one-line summary of its release conditions and variants (for example `75% where $browser = Chrome; 100% of everyone | variants: control 50%, test 50%`), so listing flags with their rollout needs no SQL and no per-flag call. Filter by tag with `tags`. For the reason behind one flag's status, use `feature-flags-status-retrieve`; for the full conditions, use `feature-flag-get-definition`.",
+         "category": "Feature flags",
+         "feature": "flags",
+         "summary": "Get all feature flags",
+diff --git a/services/mcp/schema/tool-definitions-all.json b/services/mcp/schema/tool-definitions-all.json
+index ce3ce343f25..6b632eb0b07 100644
+--- a/services/mcp/schema/tool-definitions-all.json
++++ b/services/mcp/schema/tool-definitions-all.json
+@@ -7258,7 +7258,7 @@
+         }
+     },
+     "feature-flag-get-all": {
+-        "description": "Get feature flags in the current project. Supports list filters including search by feature flag key or name (case-insensitive), then use the returned ID for get/update/delete tools. Pass `active: \"STALE\"` to list only stale flags. PostHog calls a flag stale when it is enabled and was last called over 30 days ago, or was never called, is over 30 days old and is rolled out to everyone. The filter does not return a never-called flag with an empty `groups` list in `filters`, even when `feature-flags-status-retrieve` calls it stale. Stale flags are cleanup candidates, not proof that a flag is unused. Disabled flags are not checked for staleness, so `status: ACTIVE` on a disabled flag is expected. Each row carries `status`, `last_called_at`, `active` and `created_at`. For the reason behind one flag's status, and its rollout summary, use `feature-flags-status-retrieve`.",
++        "description": "Get feature flags in the current project. Supports list filters including search by feature flag key or name (case-insensitive), then use the returned ID for get/update/delete tools. Pass `active: \"STALE\"` to list only stale flags. PostHog calls a flag stale when it is enabled and was last called over 30 days ago, or was never called, is over 30 days old and is rolled out to everyone. The filter does not return a never-called flag with an empty `groups` list in `filters`, even when `feature-flags-status-retrieve` calls it stale. Stale flags are cleanup candidates, not proof that a flag is unused. Disabled flags are not checked for staleness, so `status: ACTIVE` on a disabled flag is expected. Each row carries `status`, `last_called_at`, `active`, `tags`, `created_at` and `rollout`, a one-line summary of its release conditions and variants (for example `75% where $browser = Chrome; 100% of everyone | variants: control 50%, test 50%`), so listing flags with their rollout needs no SQL and no per-flag call. Filter by tag with `tags`. For the reason behind one flag's status, use `feature-flags-status-retrieve`; for the full conditions, use `feature-flag-get-definition`.",
+         "category": "Feature flags",
+         "feature": "flags",
+         "summary": "Get all feature flags",
+diff --git a/services/mcp/src/tools/featureFlags/listRolloutHooks.ts b/services/mcp/src/tools/featureFlags/listRolloutHooks.ts
+new file mode 100644
+index 00000000000..8da48e4c601
+--- /dev/null
++++ b/services/mcp/src/tools/featureFlags/listRolloutHooks.ts
+@@ -0,0 +1,8 @@
++import type { ToolHooks } from '@/tools/tool-hooks'
++
++import { withRolloutSummaries } from './rolloutSummary'
++
++/** feature-flag-get-all: each row's `filters` becomes a one-line `rollout` summary. */
++export default {
++    afterResponse: (_context, _params, result) => withRolloutSummaries(result),
++} satisfies ToolHooks<unknown>
+diff --git a/services/mcp/src/tools/featureFlags/rolloutSummary.ts b/services/mcp/src/tools/featureFlags/rolloutSummary.ts
+new file mode 100644
+index 00000000000..ecc3ef5145b
+--- /dev/null
++++ b/services/mcp/src/tools/featureFlags/rolloutSummary.ts
+@@ -0,0 +1,128 @@
++/**
++ * A one-line summary of a flag's release conditions and variants, for list rows. "List flags with
++ * their rollout" took 4 calls and 11,229 tokens on the friction session: the list rows carried no
++ * rollout, `system.feature_flags` keeps it inside `filters.groups`, and the status tool is one call
++ * per flag. The list response has `filters`, so the MCP server summarizes it per row instead.
++ */
++
++interface PropertyFilter {
++    key?: unknown
++    type?: unknown
++    operator?: unknown
++    value?: unknown
++}
++
++interface ReleaseCondition {
++    properties?: PropertyFilter[] | null
++    rollout_percentage?: number | null
++    variant?: string | null
++}
++
++interface FlagFilters {
++    groups?: ReleaseCondition[] | null
++    multivariate?: { variants?: { key?: string; rollout_percentage?: number | null }[] | null } | null
++    aggregation_group_type_index?: number | null
++}
++
++const OPERATOR_TEXT: Record<string, string> = {
++    exact: '=',
++    is_not: '≠',
++    icontains: 'contains',
++    not_icontains: 'does not contain',
++    regex: 'matches',
++    not_regex: 'does not match',
++    gt: '>',
++    gte: '≥',
++    lt: '<',
++    lte: '≤',
++    is_date_before: 'before',
++    is_date_after: 'after',
++    in: 'in',
++    not_in: 'not in',
++}
++
++/** At most this many property filters are spelled out per condition; the rest are counted. */
++const MAX_PROPERTIES_SHOWN = 2
++
++function describeValue(value: unknown): string {
++    if (Array.isArray(value)) {
++        return value.length > 3
++            ? `${value.slice(0, 3).map(String).join(', ')} +${value.length - 3}`
++            : value.map(String).join(', ')
++    }
++    return String(value)
++}
++
++function describeProperty(property: PropertyFilter): string {
++    const key = String(property.key ?? '?')
++    const operator = typeof property.operator === 'string' ? property.operator : 'exact'
++    if (property.type === 'cohort') {
++        return `${operator === 'not_in' ? 'not in' : 'in'} cohort ${describeValue(property.value)}`
++    }
++    if (property.type === 'flag') {
++        return `flag ${key} = ${describeValue(property.value)}`
++    }
++    if (operator === 'is_set') {
++        return `${key} is set`
++    }
++    if (operator === 'is_not_set') {
++        return `${key} is not set`
++    }
++    return `${key} ${OPERATOR_TEXT[operator] ?? operator} ${describeValue(property.value)}`
++}
++
++function describeCondition(condition: ReleaseCondition): string {
++    const percent = condition.rollout_percentage ?? 100
++    const properties = condition.properties ?? []
++    const shown = properties.slice(0, MAX_PROPERTIES_SHOWN).map(describeProperty)
++    const more = properties.length > MAX_PROPERTIES_SHOWN ? ` +${properties.length - MAX_PROPERTIES_SHOWN} more` : ''
++    const audience = shown.length > 0 ? `where ${shown.join(' and ')}${more}` : 'of everyone'
++    const variant = condition.variant ? ` → ${condition.variant}` : ''
++    return `${percent}% ${audience}${variant}`
++}
++
++/**
++ * For example `75% where $browser = Chrome; 100% where plan = pro | variants: control 50%, test 50%`.
++ * A flag with no release conditions reads `no release conditions` (it matches no one).
++ */
++export function summarizeRollout(filters: unknown): string {
++    if (!filters || typeof filters !== 'object') {
++        return 'unknown'
++    }
++    const { groups, multivariate, aggregation_group_type_index } = filters as FlagFilters
++    const conditions = (groups ?? []).map(describeCondition)
++    const parts = [conditions.length > 0 ? conditions.join('; ') : 'no release conditions']
++    const variants = multivariate?.variants ?? []
++    if (variants.length > 0) {
++        parts.push(`variants: ${variants.map((v) => `${v.key} ${v.rollout_percentage ?? 0}%`).join(', ')}`)
++    }
++    if (aggregation_group_type_index !== null && aggregation_group_type_index !== undefined) {
++        parts.push(`by group type ${aggregation_group_type_index}`)
++    }
++    return parts.join(' | ')
++}
++
++/**
++ * Replaces each row's `filters` with its `rollout` summary, keeping the row's other fields. A row
++ * without `filters` is left as it is.
++ */
++export function withRolloutSummaries<T>(result: T): T {
++    if (!result || typeof result !== 'object' || !Array.isArray((result as { results?: unknown }).results)) {
++        return result
++    }
++    const page = result as T & { results: Record<string, unknown>[] }
++    return {
++        ...page,
++        results: page.results.map((row) => {
++            if (!row || typeof row !== 'object' || !('filters' in row)) {
++                return row
++            }
++            const { filters, _posthogUrl, ...rest } = row
++            return {
++                ...rest,
++                rollout: summarizeRollout(filters),
++                ...(_posthogUrl !== undefined ? { _posthogUrl } : {}),
++            }
++        }),
++    }
++}
+diff --git a/services/mcp/src/tools/generated/feature_flags.ts b/services/mcp/src/tools/generated/feature_flags.ts
+index 12e2a8af5db..3a210a4aa6b 100644
+--- a/services/mcp/src/tools/generated/feature_flags.ts
++++ b/services/mcp/src/tools/generated/feature_flags.ts
+@@ -16,6 +16,7 @@ import hooks_featureFlagGetDefinition from '@/tools/featureFlags/conditionIdHook
+ import hooks_featureFlagRollOutToEveryone from '@/tools/featureFlags/conditionIdHooks'
+ import hooks_featureFlagSetReleaseConditionRollout from '@/tools/featureFlags/conditionIdHooks'
+ import hooks_featureFlagsMyFlagsRetrieve from '@/tools/featureFlags/conditionIdHooks'
++import hooks_featureFlagGetAll from '@/tools/featureFlags/listRolloutHooks'
+ import hooks_updateFeatureFlag from '@/tools/featureFlags/updateFeatureFlagHooks'
+ import { transformRequestBody, withToolHooks } from '@/tools/tool-hooks'
+ import { withPostHogUrl, pickResponseFields, type WithPostHogUrl } from '@/tools/tool-utils'
+@@ -274,56 +275,70 @@ const featureFlagGetAll = (): ToolBase<
+ > => ({
+     name: 'feature-flag-get-all',
+     schema: FeatureFlagGetAllSchema(),
+-    handler: async (context: Context, params: z.infer<ReturnType<typeof FeatureFlagGetAllSchema>>) => {
+-        const projectId = await context.stateManager.getProjectId()
+-        const result = await context.api.request<Schemas.PaginatedFeatureFlagList>({
+-            method: 'GET',
+-            path: `/api/projects/${encodeURIComponent(String(projectId))}/feature_flags/`,
+-            query: {
+-                active: params.active,
+-                archived: params.archived,
+-                created_by_id: params.created_by_id,
+-                deleted: params.deleted,
+-                eligible_for_experiment: params.eligible_for_experiment,
+-                evaluation_runtime: params.evaluation_runtime,
+-                excluded_properties: params.excluded_properties,
+-                excluded_tags: params.excluded_tags,
+-                has_evaluation_contexts: params.has_evaluation_contexts,
+-                key: params.key,
+-                limit: params.limit,
+-                offset: params.offset,
+-                search: params.search,
+-                tags: params.tags,
+-                type: params.type,
+-            },
+-        })
+-        const filtered = {
+-            ...result,
+-            results: (result.results ?? []).map((item: any) =>
+-                pickResponseFields(item, [
+-                    'id',
+-                    'key',
+-                    'name',
+-                    'updated_at',
+-                    'status',
+-                    'tags',
+-                    'last_called_at',
+-                    'active',
+-                    'created_at',
+-                ])
+-            ),
+-        } as typeof result
+-        return await withPostHogUrl(
+-            context,
+-            {
+-                ...filtered,
+-                results: await Promise.all(
+-                    (filtered.results ?? []).map((item) => withPostHogUrl(context, item, `/feature-flags/${item.id}`))
++    handler: withToolHooks(
++        hooks_featureFlagGetAll,
++        async (context: Context, params: z.infer<ReturnType<typeof FeatureFlagGetAllSchema>>) => {
++            const projectId = await context.stateManager.getProjectId()
++            const result = await context.api.request<Schemas.PaginatedFeatureFlagList>({
++                method: 'GET',
++                path: `/api/projects/${encodeURIComponent(String(projectId))}/feature_flags/`,
++                query: {
++                    active: params.active,
++                    archived: params.archived,
++                    created_by_id: params.created_by_id,
++                    deleted: params.deleted,
++                    eligible_for_experiment: params.eligible_for_experiment,
++                    evaluation_runtime: params.evaluation_runtime,
++                    excluded_properties: params.excluded_properties,
++                    excluded_tags: params.excluded_tags,
++                    has_evaluation_contexts: params.has_evaluation_contexts,
++                    key: params.key,
++                    limit: params.limit,
++                    offset: params.offset,
++                    search: params.search,
++                    tags: params.tags,
++                    type: params.type,
++                },
++            })
++            const filtered = {
++                ...result,
++                results: (result.results ?? []).map((item: any) =>
++                    pickResponseFields(item, [
++                        'id',
++                        'key',
++                        'name',
++                        'updated_at',
++                        'status',
++                        'tags',
++                        'last_called_at',
++                        'active',
++                        'created_at',
++                        'filters.groups.*.properties.*.key',
++                        'filters.groups.*.properties.*.type',
++                        'filters.groups.*.properties.*.operator',
++                        'filters.groups.*.properties.*.value',
++                        'filters.groups.*.rollout_percentage',
++                        'filters.groups.*.variant',
++                        'filters.multivariate.variants.*.key',
++                        'filters.multivariate.variants.*.rollout_percentage',
++                        'filters.aggregation_group_type_index',
++                    ])
+                 ),
+-            },
+-            '/feature-flags'
+-        )
+-    },
++            } as typeof result
++            return await withPostHogUrl(
++                context,
++                {
++                    ...filtered,
++                    results: await Promise.all(
++                        (filtered.results ?? []).map((item) =>
++                            withPostHogUrl(context, item, `/feature-flags/${item.id}`)
++                        )
++                    ),
++                },
++                '/feature-flags'
++            )
++        }
++    ),
+ })
+ 
+ const FeatureFlagGetDefinitionSchema = () => {
+diff --git a/services/mcp/tests/unit/feature-flag-list-rollout.test.ts b/services/mcp/tests/unit/feature-flag-list-rollout.test.ts
+new file mode 100644
+index 00000000000..5e61fee43fe
+--- /dev/null
++++ b/services/mcp/tests/unit/feature-flag-list-rollout.test.ts
+@@ -0,0 +1,133 @@
++import fs from 'node:fs'
++import path from 'node:path'
++import { describe, expect, it, vi } from 'vitest'
++
++import { formatResponse } from '@/lib/response'
++import { summarizeRollout } from '@/tools/featureFlags/rolloutSummary'
++import { GENERATED_TOOL_MAP } from '@/tools/generated'
++import type { Context } from '@/tools/types'
++
++// The two flags of the friction session's job 4, as the list endpoint returns them (abridged).
++const CHECKOUT = {
++    id: 488,
++    key: 'friction-new-checkout',
++    name: 'friction- new checkout flow',
++    updated_at: '2026-11-10T19:40:46.345332Z',
++    status: 'ACTIVE',
++    tags: ['friction-checkout'],
++    last_called_at: null,
++    active: false,
++    created_at: '2026-11-10T19:39:50.994322Z',
++    version: 3,
++    ensure_experience_continuity: false,
++    filters: {
++        groups: [
++            {
++                properties: [{ key: '$browser', value: ['Chrome'], type: 'person', operator: 'exact' }],
++                rollout_percentage: 75,
++                aggregation_group_type_index: null,
++            },
++            {
++                properties: [{ key: 'friction-plan', value: ['pro'], type: 'person', operator: 'exact' }],
++                rollout_percentage: 100,
++                aggregation_group_type_index: null,
++            },
++        ],
++        multivariate: {
++            variants: [
++                { key: 'control', name: 'Control', rollout_percentage: 50 },
++                { key: 'test', name: 'New checkout', rollout_percentage: 50 },
++            ],
++        },
++        aggregation_group_type_index: null,
++        payloads: { test: '{"big": "payload"}' },
++    },
++}
++const DARK_MODE = {
++    ...CHECKOUT,
++    id: 489,
++    key: 'friction-dark-mode',
++    name: 'friction- dark mode',
++    tags: ['friction-ui'],
++    active: true,
++    filters: { groups: [{ properties: [], rollout_percentage: 20 }], aggregation_group_type_index: null },
++}
++
++describe('summarizeRollout', () => {
++    it('summarizes conditions and variants on one line', () => {
++        expect(summarizeRollout(CHECKOUT.filters)).toBe(
++            '75% where $browser = Chrome; 100% where friction-plan = pro | variants: control 50%, test 50%'
++        )
++        expect(summarizeRollout(DARK_MODE.filters)).toBe('20% of everyone')
++    })
++
++    it('covers empty, cohort, unset, many-property, variant-override and group-type conditions', () => {
++        expect(summarizeRollout({ groups: [] })).toBe('no release conditions')
++        expect(
++            summarizeRollout({
++                groups: [
++                    {
++                        properties: [
++                            { key: 'id', type: 'cohort', value: 7, operator: 'in' },
++                            { key: 'email', type: 'person', operator: 'is_set' },
++                            { key: 'plan', type: 'person', operator: 'is_not', value: ['free'] },
++                        ],
++                        rollout_percentage: null,
++                        variant: 'test',
++                    },
++                ],
++                aggregation_group_type_index: 0,
++            })
++        ).toBe('100% where in cohort 7 and email is set +1 more → test | by group type 0')
++        expect(summarizeRollout(undefined)).toBe('unknown')
++    })
++})
++
++describe('feature-flag-get-all rows', () => {
++    async function list(): Promise<Record<string, unknown>> {
++        const request = vi
++            .fn()
++            .mockResolvedValue({ count: 2, next: null, previous: null, results: [DARK_MODE, CHECKOUT] })
++        const context = {
++            api: { request, getProjectBaseUrl: () => 'http://localhost:8010/project/1' },
++            stateManager: { getProjectId: async () => '1' },
++        } as unknown as Context
++        return (await GENERATED_TOOL_MAP['feature-flag-get-all']!().handler(context, {})) as Record<string, unknown>
++    }
++
++    it('carry active, tags and a rollout summary instead of the raw filters', async () => {
++        const result = await list()
++        const rows = result.results as Record<string, unknown>[]
++        expect(rows[1]).toEqual({
++            id: 488,
++            key: 'friction-new-checkout',
++            name: 'friction- new checkout flow',
++            updated_at: '2026-11-10T19:40:46.345332Z',
++            status: 'ACTIVE',
++            tags: ['friction-checkout'],
++            last_called_at: null,
++            active: false,
++            created_at: '2026-11-10T19:39:50.994322Z',
++            rollout: '75% where $browser = Chrome; 100% where friction-plan = pro | variants: control 50%, test 50%',
++            _posthogUrl: 'http://localhost:8010/project/1/feature-flags/488',
++        })
++        expect(rows[0]).toMatchObject({ active: true, tags: ['friction-ui'], rollout: '20% of everyone' })
++        expect(formatResponse(result)).not.toContain('payload')
++    })
++})
++
++describe('the execute-sql guidance for listing flags', () => {
++    const guidelines = fs.readFileSync(
++        path.resolve(
++            __dirname,
++            '../../../../products/posthog_ai/skills/querying-posthog-data/references/guidelines.md'
++        ),
++        'utf-8'
++    )
++
++    it('reads rollouts from the release conditions, not the legacy top-level column', () => {
++        expect(guidelines).not.toContain('SELECT key, name, rollout_percentage')
++        expect(guidelines).toContain("JSONExtractRaw(filters, 'groups') AS release_conditions")
++        expect(guidelines).toContain('call `feature-flag-get-all` instead')
++    })
++})
+-- 
+2.50.1 (Apple Git-155)
+

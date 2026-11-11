@@ -1,0 +1,210 @@
+From 6f77804fab65ed0a05bb71419a86b2f13d60f4e2 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:59:17 -0700
+Subject: [PATCH] fix(mcp): apply the project test-account default to actors
+ queries
+
+The query-* tools drop the generated `filterTestAccounts: false` default
+and follow the project's "Filter out internal and test users" setting when
+the field is omitted. That only covered a top-level field. The six
+query-*-actors tools carry the field on `source`, so they kept the hard
+`false` and listed internal users that the insight being drilled into had
+excluded.
+
+The factory now strips the default from the actors `source` and applies
+the project setting there as well.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../mcp/src/tools/query-wrapper-factory.ts    | 29 ++++++++++++++++
+ .../tool-schemas/query-funnel-actors.json     |  3 +-
+ .../tool-schemas/query-lifecycle-actors.json  |  3 +-
+ .../tool-schemas/query-paths-actors.json      |  3 +-
+ .../tool-schemas/query-retention-actors.json  |  3 +-
+ .../tool-schemas/query-stickiness-actors.json |  3 +-
+ .../tool-schemas/query-trends-actors.json     |  3 +-
+ .../tests/unit/query-wrapper-factory.test.ts  | 33 +++++++++++++++++++
+ 8 files changed, 68 insertions(+), 12 deletions(-)
+
+diff --git a/services/mcp/src/tools/query-wrapper-factory.ts b/services/mcp/src/tools/query-wrapper-factory.ts
+index 6da0a60182a..7a7e0a0945d 100644
+--- a/services/mcp/src/tools/query-wrapper-factory.ts
++++ b/services/mcp/src/tools/query-wrapper-factory.ts
+@@ -65,6 +65,20 @@ function hasTestAccountFilterField(schema: ZodObjectAny): schema is z.ZodObject<
+     return schema instanceof z.ZodObject && TEST_ACCOUNT_FILTER_FIELD in schema.shape
+ }
+ 
++const ACTORS_SOURCE_FIELD = 'source'
++
++/**
++ * An actors query drills into a `source` insight query, and the backend runs that source
++ * as sent. So `filterTestAccounts` lives on the source, with the same hard `false` default.
++ */
++function actorsSourceSchema(schema: ZodObjectAny): z.ZodObject<z.ZodRawShape> | undefined {
++    if (!(schema instanceof z.ZodObject)) {
++        return undefined
++    }
++    const source = schema.shape[ACTORS_SOURCE_FIELD]
++    return source instanceof z.ZodObject && hasTestAccountFilterField(source) ? source : undefined
++}
++
+ /**
+  * Most generated query schemas hard-default `filterTestAccounts` to `false`, which
+  * silently ignores the project's "Filter out internal and test users" default
+@@ -79,6 +93,17 @@ function hasTestAccountFilterField(schema: ZodObjectAny): schema is z.ZodObject<
+  * setting is unchecked.
+  */
+ function withoutTestAccountFilterDefault<T extends ZodObjectAny>(schema: T): T {
++    const source = actorsSourceSchema(schema)
++    if (source) {
++        const strippedSource = withoutTestAccountFilterDefault(source)
++        if (strippedSource !== source) {
++            // `extend` builds a new schema, which does not carry the description over.
++            const described = source.description ? strippedSource.describe(source.description) : strippedSource
++            return (schema as unknown as z.ZodObject<z.ZodRawShape>).extend({
++                [ACTORS_SOURCE_FIELD]: described,
++            }) as unknown as T
++        }
++    }
+     if (!hasTestAccountFilterField(schema)) {
+         return schema
+     }
+@@ -199,6 +224,10 @@ export function createQueryWrapper<T extends ZodObjectAny>(config: QueryWrapperC
+             if (hasTestAccountFilterField(schema)) {
+                 await applyProjectTestAccountDefault(context, query)
+             }
++            const source = query[ACTORS_SOURCE_FIELD]
++            if (actorsSourceSchema(schema) && source !== null && typeof source === 'object') {
++                await applyProjectTestAccountDefault(context, source as Record<string, unknown>)
++            }
+             const baseUrl = context.api.getProjectBaseUrl(projectId)
+             const effectiveOutputFormat = callerOutputFormat ?? config.outputFormat
+ 
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-funnel-actors.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-funnel-actors.json
+index a053bf099bf..0b7ec120cf3 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-funnel-actors.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-funnel-actors.json
+@@ -135,8 +135,7 @@
+                     "description": "Date range for the query"
+                 },
+                 "filterTestAccounts": {
+-                    "default": false,
+-                    "description": "Exclude internal and test users by applying the respective filters",
++                    "description": "Exclude internal and test users by applying the respective filters. When omitted, follows the project's \"Filter out internal and test users\" default setting.",
+                     "type": "boolean"
+                 },
+                 "funnelsFilter": {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-lifecycle-actors.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-lifecycle-actors.json
+index 42ced188589..e28b4d935bd 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-lifecycle-actors.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-lifecycle-actors.json
+@@ -83,8 +83,7 @@
+                     "description": "Date range for the query"
+                 },
+                 "filterTestAccounts": {
+-                    "default": false,
+-                    "description": "Exclude internal and test users by applying the respective filters",
++                    "description": "Exclude internal and test users by applying the respective filters. When omitted, follows the project's \"Filter out internal and test users\" default setting.",
+                     "type": "boolean"
+                 },
+                 "interval": {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-paths-actors.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-paths-actors.json
+index ace8f56424f..07320c74828 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-paths-actors.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-paths-actors.json
+@@ -84,8 +84,7 @@
+                     "description": "Date range for the query"
+                 },
+                 "filterTestAccounts": {
+-                    "default": false,
+-                    "description": "Exclude internal and test users by applying the respective filters",
++                    "description": "Exclude internal and test users by applying the respective filters. When omitted, follows the project's \"Filter out internal and test users\" default setting.",
+                     "type": "boolean"
+                 },
+                 "kind": {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-retention-actors.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-retention-actors.json
+index 31d9d31b792..f98551d742d 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-retention-actors.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-retention-actors.json
+@@ -85,8 +85,7 @@
+                     "description": "Date range for the query"
+                 },
+                 "filterTestAccounts": {
+-                    "default": false,
+-                    "description": "Exclude internal and test users by applying the respective filters",
++                    "description": "Exclude internal and test users by applying the respective filters. When omitted, follows the project's \"Filter out internal and test users\" default setting.",
+                     "type": "boolean"
+                 },
+                 "kind": {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-stickiness-actors.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-stickiness-actors.json
+index d32237e0eaf..d0144fb9a35 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-stickiness-actors.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-stickiness-actors.json
+@@ -98,8 +98,7 @@
+                     "description": "Date range for the query"
+                 },
+                 "filterTestAccounts": {
+-                    "default": false,
+-                    "description": "Exclude internal and test users by applying the respective filters",
++                    "description": "Exclude internal and test users by applying the respective filters. When omitted, follows the project's \"Filter out internal and test users\" default setting.",
+                     "type": "boolean"
+                 },
+                 "interval": {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-trends-actors.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-trends-actors.json
+index 2d96ecfc581..fda9352853e 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/query-trends-actors.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/query-trends-actors.json
+@@ -201,8 +201,7 @@
+                     "description": "Date range for the query"
+                 },
+                 "filterTestAccounts": {
+-                    "default": false,
+-                    "description": "Exclude internal and test users by applying the respective filters",
++                    "description": "Exclude internal and test users by applying the respective filters. When omitted, follows the project's \"Filter out internal and test users\" default setting.",
+                     "type": "boolean"
+                 },
+                 "interval": {
+diff --git a/services/mcp/tests/unit/query-wrapper-factory.test.ts b/services/mcp/tests/unit/query-wrapper-factory.test.ts
+index 750e707de67..eb1d697fd8c 100644
+--- a/services/mcp/tests/unit/query-wrapper-factory.test.ts
++++ b/services/mcp/tests/unit/query-wrapper-factory.test.ts
+@@ -402,6 +402,39 @@ describe('createQueryWrapper filterTestAccounts project default', () => {
+         expect(tool.schema.safeParse({ series, filterTestAccounts: stringValue }).success).toBe(false)
+     })
+ 
++    // An actors query carries the field on its `source`, and the backend runs the source as
++    // sent. Leaving the hard `false` default there lists internal users that the insight the
++    // agent is drilling into has excluded.
++    it.each([
++        ['omitted follows a checked project default', false, {}, true, true],
++        ['omitted stays unset when the project default is unchecked', false, {}, false, undefined],
++        ['explicit false wins over a checked project default', false, { filterTestAccounts: false }, true, false],
++        ['explicit true wins over an unchecked project default', false, { filterTestAccounts: true }, false, true],
++        ['an intentional true schema default survives an unchecked project default', true, {}, false, true],
++    ] as const)(
++        'on the source of an actors query, %s',
++        async (_name, schemaDefault, sourceExtra, projectDefault, expected) => {
++            const trendsActors = vi.fn().mockResolvedValue({ results: [], query: {} })
++            const context = createMockContext(vi.fn(), projectDefault)
++            vi.mocked(context.api.query).mockReturnValue({ trendsActors } as unknown as ReturnType<
++                Context['api']['query']
++            >)
++            const schema = z.object({
++                day: z.string().optional(),
++                source: makeSchema(schemaDefault)
++                    .extend({ kind: z.literal('TrendsQuery').default('TrendsQuery') })
++                    .describe('The source insight query.'),
++            })
++            const tool = createQueryWrapper({ name: 'test-actors', schema, kind: 'InsightActorsQuery' })()
++
++            await tool.handler(context, tool.schema.parse({ source: { series, ...sourceExtra } }))
++
++            expect(trendsActors.mock.calls[0]![0].query.source.filterTestAccounts).toBe(expected)
++            expect(trendsActors.mock.calls[0]![0].query).not.toHaveProperty('filterTestAccounts')
++            expect((tool.schema.shape.source as z.ZodType).description).toBe('The source insight query.')
++        }
++    )
++
+     it('does not inject the field into schemas that lack it', async () => {
+         const runQuery = vi.fn().mockResolvedValue({ results: [] })
+         const context = createMockContext(runQuery, true)

@@ -1,0 +1,23 @@
+# Usability series: the USABILITY research build is the FIXED build (../bugfix/SERIES) plus these patches, in this
+# order (one file per line; '#' starts a comment). Apply at the repository root after the bug-fix series.
+# A: response shaping
+0001-feat-mcp-return-short-receipts-from-writes-and-delet.patch
+0002-feat-mcp-send-each-tool-s-_agentNote-once-per-sessio.patch
+0003-feat-mcp-de-duplicate-schemas-in-exec-info-and-schem.patch
+0004-feat-mcp-format-query-retention-results-as-a-compact.patch
+0005-feat-mcp-list-feature-flags-with-a-rollout-summary.patch
+# B: exec behaviour
+0006-feat-mcp-require-confirm-for-destructive-tools-over-.patch
+0007-feat-mcp-resolve-guessed-tool-name-orderings-and-nam.patch
+0008-feat-mcp-carry-the-failing-field-s-schema-in-call-va.patch
+0009-feat-mcp-keep-exec-text-consistent-when-skills-canno.patch
+0010-feat-mcp-list-only-seen-events-from-read-data-schema.patch
+0011-feat-mcp-batch-read-only-exec-commands-in-one-reques.patch
+# C: new atomic and batch tools, and the design note
+0012-feat-mcp-add-batch-tools-for-insights-and-annotation.patch
+0013-feat-mcp-add-dashboard-create-with-insights-with-com.patch
+0014-feat-mcp-add-version-checked-partial-updates-for-nes.patch
+0015-docs-mcp-describe-the-atomic-write-and-batch-pattern.patch
+# integration of A, B and C
+0016-fix-mcp-keep-annotation-create-s-receipt-flag-out-of.patch
+0017-test-mcp-refresh-the-read-data-schema-schema-snapsho.patch

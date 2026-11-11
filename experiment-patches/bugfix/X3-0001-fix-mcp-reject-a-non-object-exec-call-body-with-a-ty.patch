@@ -1,0 +1,93 @@
+From bb46039d9fda343fc5bb4d38600ac2a1d1b8ab30 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:51:05 -0700
+Subject: [PATCH] fix(mcp): reject a non-object exec call body with a typed
+ error
+
+`call <tool> null` (or a number, string or boolean body) threw a TypeError
+from the `in` operator before schema validation ran. The executor reports
+an untyped error as an internal fault and captures an exception, and the
+agent got a raw JavaScript message with nothing to act on.
+
+A JSON body that is not an object now raises ExecCommandError with the
+existing `invalid_json` reason and says what was received.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/tools/exec.ts       | 15 ++++++++++++++-
+ services/mcp/tests/unit/exec.test.ts | 24 +++++++++++++++++++++++-
+ 2 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index 97b15cd09bf..2d37cc51c29 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -2171,12 +2171,25 @@ export function createExecTool(
+                     if (!jsonBody) {
+                         input = {}
+                     } else {
++                        let parsed: unknown
+                         try {
+-                            input = JSON.parse(jsonBody) as Record<string, unknown>
++                            parsed = JSON.parse(jsonBody)
+                         } catch (err) {
+                             const detail = err instanceof Error ? err.message : String(err)
+                             throw new ExecCommandError(`Invalid JSON input: ${detail}`, 'invalid_json')
+                         }
++                        // Tool input is always an object. A body such as `null` or `5` would
++                        // otherwise reach the `in` check below and throw an untyped TypeError,
++                        // which is reported as a server fault instead of an agent mistake.
++                        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
++                            const received =
++                                parsed === null ? 'null' : Array.isArray(parsed) ? 'an array' : `a ${typeof parsed}`
++                            throw new ExecCommandError(
++                                `Invalid JSON input: expected a JSON object, received ${received}. Example: call ${tool.name} {"key": "value"}`,
++                                'invalid_json'
++                            )
++                        }
++                        input = parsed as Record<string, unknown>
+                     }
+ 
+                     // `output_format` is hidden from exec-mode schemas — `--json` owns output
+diff --git a/services/mcp/tests/unit/exec.test.ts b/services/mcp/tests/unit/exec.test.ts
+index af5194ae7a1..f07a92b440e 100644
+--- a/services/mcp/tests/unit/exec.test.ts
++++ b/services/mcp/tests/unit/exec.test.ts
+@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml'
+ import { z } from 'zod'
+ 
+ import { STRUCTURED_CONTENT_ONLY_TEXT, type ToolResultPayload, UI_APP_RENDER_NOTE } from '@/lib/build-tool-result'
+-import { PostHogApiError, ToolInputValidationError } from '@/lib/errors'
++import { ExecCommandError, PostHogApiError, ToolInputValidationError } from '@/lib/errors'
+ import { estimateTokens } from '@/lib/estimate-tokens'
+ import { buildQueryToolsBlock, buildToolDomainsCompact } from '@/lib/instructions'
+ import { InstructionsFormatter } from '@/lib/instructions-formatter'
+@@ -773,6 +773,28 @@ describe('exec tool', () => {
+             ).rejects.toThrow(/Invalid JSON input:/)
+         })
+ 
++        // These used to throw a TypeError from the `in` operator, which the executor
++        // records as an internal fault rather than a mistake in the command.
++        it.each([
++            ['null', 'null'],
++            ['5', 'a number'],
++            ['"text"', 'a string'],
++            ['true', 'a boolean'],
++            ['[1, 2]', 'an array'],
++        ])('rejects the JSON body %s as a typed command error', async (body, received) => {
++            const handler = vi.fn(async () => ({ ok: true }))
++            const exec = createExec([makeMockTool({ handler })])
++
++            const call = exec.handler(mockContext, { command: `call mock-tool ${body}` })
++
++            await expect(call).rejects.toBeInstanceOf(ExecCommandError)
++            await expect(call).rejects.toMatchObject({
++                reason: 'invalid_json',
++                message: `Invalid JSON input: expected a JSON object, received ${received}. Example: call mock-tool {"key": "value"}`,
++            })
++            expect(handler).not.toHaveBeenCalled()
++        })
++
+         it.each([
+             {
+                 case: 'a missing required parameter, naming the field',

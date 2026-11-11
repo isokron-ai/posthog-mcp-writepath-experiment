@@ -1,0 +1,723 @@
+From 0d531df727e2aee39e8ba50c0a86f46a0292095c Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:55:27 -0700
+Subject: [PATCH 09/17] feat(mcp): keep exec text consistent when skills cannot
+ be loaded
+
+Where the learn capability is off (self-hosted and any client the
+feature flag does not include), the server still told the agent to
+"Prioritize skills over tools" and tool text required skills it had no
+way to load (P10: 3 of 8 guesses in the friction session). The exec
+description sent dashboards to dashboard-widgets-batch-add, whose
+widget_type enum has no insight tiles (P11). And query schemas carried
+PostHog AI planner wording such as "the properties the user has provided
+in the plan" (P14, 91 occurrences).
+
+- The compact instructions say "Prioritize skills over tools." only when
+  skills are enabled.
+- With skills unavailable, exec drops "load the <name> skill" steps from
+  info descriptions, schema field descriptions and _agentNotes, keeping
+  whatever else the sentence asked for.
+- The artifact guidance names insight-create with dashboards: [id] for
+  insight tiles.
+- Planner wording is rewritten where exec hands a schema to an agent
+  (info, schema, validation errors); the frontend schema source and the
+  generated wrappers are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/src/hono/instructions.ts         |   5 +
+ services/mcp/src/hono/tool-executor.ts        |   1 +
+ .../mcp/src/lib/instructions-formatter.ts     |   4 +
+ .../templates/sections/analysis-artifacts.md  |   2 +-
+ .../sections/compact-instructions.md          |   2 +-
+ services/mcp/src/tools/exec-schema-view.ts    | 101 ++++++++++-
+ services/mcp/src/tools/exec.ts                |  35 +++-
+ services/mcp/src/tools/skill-mentions.ts      | 126 ++++++++++++++
+ .../exec-command-reference-full.txt           |   2 +-
+ .../instructions/exec-instructions.txt        |   4 +-
+ .../instructions/tools-instructions.txt       |   2 +-
+ .../unit/exec-learn-off-consistency.test.ts   | 157 ++++++++++++++++++
+ .../tests/unit/exec-validate-first.test.ts    |   1 +
+ 13 files changed, 422 insertions(+), 20 deletions(-)
+ create mode 100644 services/mcp/src/tools/skill-mentions.ts
+ create mode 100644 services/mcp/tests/unit/exec-learn-off-consistency.test.ts
+
+diff --git a/services/mcp/src/hono/instructions.ts b/services/mcp/src/hono/instructions.ts
+index e93e9d88bda..c27f48231ce 100644
+--- a/services/mcp/src/hono/instructions.ts
++++ b/services/mcp/src/hono/instructions.ts
+@@ -112,6 +112,11 @@ export class InstructionsBuilder {
+                 state.toolFeatureFlags?.[MCP_INBOX_FIRST_FLAG] === true &&
+                 INBOX_FIRST_TOOLS.every((name) => state.allTools.some((tool) => tool.name === name)),
+             inboxClaimEnabled: state.allTools.some((tool) => tool.name === INBOX_CLAIM_TOOL),
++            // A state built without client context (tests, the CLI guide) falls back to the flag alone.
++            skillsEnabled:
++                state.requestContext || state.sessionContext
++                    ? this.getExecLearnCapabilities(state).skillsEnabled
++                    : state.toolFeatureFlags?.[MCP_EXEC_SKILLS_FEATURE_FLAG] === true,
+         }
+     }
+ 
+diff --git a/services/mcp/src/hono/tool-executor.ts b/services/mcp/src/hono/tool-executor.ts
+index 851e956eba9..5334a22da7f 100644
+--- a/services/mcp/src/hono/tool-executor.ts
++++ b/services/mcp/src/hono/tool-executor.ts
+@@ -967,6 +967,7 @@ export class ToolExecutor {
+                     this.skillCatalogService?.getCatalog()
+                 ),
+                 flagGatedTools: state.flagGatedTools,
++                skillsAvailable: this.instructionsBuilder.execSkillsEnabled(state),
+                 ...(state.heldTools ? { heldTools: state.heldTools } : {}),
+                 builtInSkillHint: this.builtInSkillHint(state),
+                 oauthClientId: state.oauthClientId,
+diff --git a/services/mcp/src/lib/instructions-formatter.ts b/services/mcp/src/lib/instructions-formatter.ts
+index 3dded58f584..f0413a36a19 100644
+--- a/services/mcp/src/lib/instructions-formatter.ts
++++ b/services/mcp/src/lib/instructions-formatter.ts
+@@ -89,6 +89,9 @@ export interface InstructionsContext {
+     inboxFirstEnabled?: boolean | undefined
+     /** Read-only connections lack `inbox-reports-claim`, so they get no pull-request line. */
+     inboxClaimEnabled?: boolean | undefined
++    /** Whether this connection can load PostHog skills through `learn`. Without it the
++     *  instructions must not tell the agent to prefer skills it has no way to load. */
++    skillsEnabled?: boolean | undefined
+ }
+ 
+ const REPLAY_VISION_TOOLS = ['vision-scanners-inline-scan', 'vision-requests-create', 'vision-requests-get']
+@@ -517,6 +520,7 @@ export class InstructionsFormatter {
+             replay_vision: replayVisionAvailable(ctx) ? REPLAY_VISION : '',
+             extra_commands: opts.extraCommands ?? '',
+             whats_new_check: docsSearchAvailable(ctx) ? WHATS_NEW_WITH_DOCS_SEARCH : WHATS_NEW_CHANGELOG_ONLY,
++            skills_priority: ctx.skillsEnabled ? 'Prioritize skills over tools.' : '',
+         }
+         const body = sections
+             .map((s) => s.trim())
+diff --git a/services/mcp/src/templates/sections/analysis-artifacts.md b/services/mcp/src/templates/sections/analysis-artifacts.md
+index 9997a3b1c45..b610b7fc553 100644
+--- a/services/mcp/src/templates/sections/analysis-artifacts.md
++++ b/services/mcp/src/templates/sections/analysis-artifacts.md
+@@ -4,7 +4,7 @@ When work produces something worth keeping, pick the artifact before you start b
+ 
+ **Notebook** (`search notebooks-` for the tools) — the default for an analysis with a narrative: a question investigated step by step, where the reader needs the reasoning, the intermediate steps, and the caveats, not just the final number. Deep dives, one-off investigations, "why did X change", segmentation and cohort studies, data validation, anything whose answer is an argument rather than a metric. Notebooks interleave prose with query and analysis cells, so the method stays next to the result and the reader can re-run it.
+ 
+-**Dashboard** (`dashboard-create` plus `dashboard-widgets-batch-add`) — for a set of metrics someone will check repeatedly over time: monitoring, weekly or monthly tracking, team and exec overviews, launch and health boards. Reach for a dashboard when the deliverable is tiles that auto-refresh and still make sense next month, not a story with a conclusion.
++**Dashboard** (`dashboard-create`, then `insight-create` with `dashboards: [<dashboard id>]` for each insight tile; `dashboard-widgets-batch-add` adds only non-insight widgets) — for a set of metrics someone will check repeatedly over time: monitoring, weekly or monthly tracking, team and exec overviews, launch and health boards. Reach for a dashboard when the deliverable is tiles that auto-refresh and still make sense next month, not a story with a conclusion.
+ 
+ **Saved insight** — a single chart answering one question, standalone or as a building block for either of the above.
+ 
+diff --git a/services/mcp/src/templates/sections/compact-instructions.md b/services/mcp/src/templates/sections/compact-instructions.md
+index 80f3196503d..f75eedde86e 100644
+--- a/services/mcp/src/templates/sections/compact-instructions.md
++++ b/services/mcp/src/templates/sections/compact-instructions.md
+@@ -6,4 +6,4 @@
+ 
+ {available_tools}
+ 
+-Prioritize skills over tools.
++{skills_priority}
+diff --git a/services/mcp/src/tools/exec-schema-view.ts b/services/mcp/src/tools/exec-schema-view.ts
+index 654a4d56364..3b525b52c6b 100644
+--- a/services/mcp/src/tools/exec-schema-view.ts
++++ b/services/mcp/src/tools/exec-schema-view.ts
+@@ -1,10 +1,86 @@
+ import { z } from 'zod'
+ 
+ import { resolveSchemaPath, summarizeSchema } from './schema-utils'
++import { stripSkillInstructions } from './skill-mentions'
+ import type { Tool, ZodObjectAny } from './types'
+ 
+ type JsonSchema = Record<string, unknown>
+ 
++/**
++ * Wording the query-wrapper schemas inherit from PostHog AI's planner
++ * (`frontend/src/queries/schema/schema-assistant-queries.ts`). Its agent works from a
++ * plan; an MCP agent has none, so "use one of the properties … in the plan" points at
++ * nothing. Rewritten where this server hands a schema to an agent, so the shared
++ * frontend source stays as PostHog AI needs it.
++ *
++ * Exact sentences first, so each one keeps its meaning; the two generic rules after
++ * them catch a sentence the table does not know yet.
++ */
++const PLANNER_WORDING: ReadonlyArray<readonly [RegExp, string]> = [
++    [/Use one of the properties the user has provided in the plan\./g, 'Use a property that exists in the project.'],
++    [/Only use property values from the plan\./g, 'Only use property values that exist in the project.'],
++    [
++        /\s*When exclusion steps appear needed when you're planning the query, make sure to explicitly state this in the plan\./g,
++        '',
++    ],
++    [/exactly as the event appears in the plan/g, 'exactly as the event is named in the project'],
++    [/\s+from the plan\b/g, ''],
++    [/\s+in the plan\b/g, ''],
++]
++
++export function rewritePlannerWording(text: string): string {
++    if (!/\bplan\b/.test(text)) {
++        return text
++    }
++    let rewritten = text
++    for (const [pattern, replacement] of PLANNER_WORDING) {
++        rewritten = rewritten.replace(pattern, replacement)
++    }
++    return rewritten
++}
++
++/**
++ * Tool text as a connection should read it: no PostHog-AI planner wording, and, where
++ * skills cannot be loaded, no instruction to load one.
++ */
++export function agentFacingText(text: string, skillsAvailable: boolean): string {
++    const reworded = rewritePlannerWording(text)
++    return skillsAvailable ? reworded : stripSkillInstructions(reworded)
++}
++
++/** A copy of the schema with every `description` passed through `rewrite`. Shared
++ *  sub-objects are rewritten once, and the input is never mutated. */
++function rewriteSchemaDescriptions(
++    node: unknown,
++    rewrite: (text: string) => string,
++    seen: WeakMap<object, unknown> = new WeakMap()
++): unknown {
++    if (typeof node !== 'object' || node === null) {
++        return node
++    }
++    const cached = seen.get(node)
++    if (cached !== undefined) {
++        return cached
++    }
++    if (Array.isArray(node)) {
++        const out: unknown[] = []
++        seen.set(node, out)
++        for (const child of node) {
++            out.push(rewriteSchemaDescriptions(child, rewrite, seen))
++        }
++        return out
++    }
++    const out: Record<string, unknown> = {}
++    seen.set(node, out)
++    for (const [key, value] of Object.entries(node)) {
++        out[key] =
++            key === 'description' && typeof value === 'string'
++                ? rewrite(value)
++                : rewriteSchemaDescriptions(value, rewrite, seen)
++    }
++    return out
++}
++
+ /**
+  * Exec mode owns output encoding through the `--json` call flag, so tools must
+  * not also advertise their `output_format` input — an agent passing
+@@ -22,7 +98,10 @@ export function stripOutputFormatProperty(jsonSchema: JsonSchema): JsonSchema {
+     return { ...jsonSchema, properties: rest }
+ }
+ 
+-const agentSchemaCache = new WeakMap<object, JsonSchema>()
++const agentSchemaCache = {
++    withSkills: new WeakMap<object, JsonSchema>(),
++    withoutSkills: new WeakMap<object, JsonSchema>(),
++}
+ 
+ /**
+  * The input schema exec shows an agent for a tool: `info`, `schema`, and the schema a
+@@ -30,17 +109,22 @@ const agentSchemaCache = new WeakMap<object, JsonSchema>()
+  * executor's validation, so fields with a Zod `.default()` read as optional. Converted
+  * once per tool schema.
+  */
+-export function agentFacingInputSchema(tool: Pick<Tool<ZodObjectAny>, 'schema' | 'rawInputSchema'>): JsonSchema {
++export function agentFacingInputSchema(
++    tool: Pick<Tool<ZodObjectAny>, 'schema' | 'rawInputSchema'>,
++    skillsAvailable = true
++): JsonSchema {
++    const cache = skillsAvailable ? agentSchemaCache.withSkills : agentSchemaCache.withoutSkills
+     const key = (tool.rawInputSchema as object | undefined) ?? tool.schema
+-    const cached = agentSchemaCache.get(key)
++    const cached = cache.get(key)
+     if (cached) {
+         return cached
+     }
+-    const schema =
++    const base =
+         (tool.rawInputSchema as JsonSchema | undefined) ??
+         stripOutputFormatProperty(z.toJSONSchema(tool.schema, { io: 'input' }) as JsonSchema)
+-    agentSchemaCache.set(key, schema)
+-    return schema
++    const rewritten = rewriteSchemaDescriptions(base, (text) => agentFacingText(text, skillsAvailable)) as JsonSchema
++    cache.set(key, rewritten)
++    return rewritten
+ }
+ 
+ /** Upper bound on the schema text one validation error carries (about 2,000 tokens).
+@@ -126,11 +210,12 @@ function namesAndTypes(summary: unknown): unknown {
+  */
+ export function describeFailingFieldSchemas(
+     tool: Pick<Tool<ZodObjectAny>, 'name' | 'schema' | 'rawInputSchema'>,
+-    issues: readonly z.core.$ZodIssue[]
++    issues: readonly z.core.$ZodIssue[],
++    skillsAvailable = true
+ ): string {
+     let full: JsonSchema
+     try {
+-        full = agentFacingInputSchema(tool)
++        full = agentFacingInputSchema(tool, skillsAvailable)
+     } catch {
+         return ''
+     }
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index 7617cf2c0b6..e78965b8788 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -26,7 +26,7 @@ import { APP_DATA_META_KEY } from '@/ui-apps/types'
+ 
+ import { readParamAliases } from './cast-helpers'
+ import { type ExecLearnCatalog, QUALIFIED_IDENTIFIER, tokenizeLearnInput } from './exec-learn'
+-import { agentFacingInputSchema, describeFailingFieldSchemas } from './exec-schema-view'
++import { agentFacingInputSchema, agentFacingText, describeFailingFieldSchemas } from './exec-schema-view'
+ import {
+     TOKEN_CHAR_LIMIT,
+     compactInfoSchema,
+@@ -36,6 +36,7 @@ import {
+     resolveSchemaPath,
+     summarizeSchema,
+ } from './schema-utils'
++import { stripSkillInstructions } from './skill-mentions'
+ import { type BuiltInSkillHint, formatSkillLookupMiss, type SkillLookupMissKind } from './skills/notFound'
+ import { closestToolNames, isRegexPattern, resolveToolAlias, searchToolsRanked, searchToolsRegex } from './tool-search'
+ import { getToolDefinitions, type FlagGatedTool, type ScopeGatedTool } from './toolDefinitions'
+@@ -270,6 +271,12 @@ export interface ExecToolOptions {
+      * pass false only for a caller that confirms destructive calls some other way.
+      */
+     requireDestructiveConfirmation?: boolean
++    /**
++     * Whether this connection can load PostHog skills (`learn` with skills). When false,
++     * `info` descriptions and `_agentNote`s drop their "load the <name> skill" steps, so
++     * the agent is not told to do something it cannot. Defaults to true.
++     */
++    skillsAvailable?: boolean
+     learnCatalog?: ExecLearnCatalog
+     /**
+      * Client is an inline-exec UI-app host that renders MCP UI apps on the exec
+@@ -427,6 +434,20 @@ function splitBatchedCommands(command: string): string[] | undefined {
+     return commands
+ }
+ 
++/** Drops "load the <name> skill" steps from a result's `_agentNote` in place, so the
++ *  result's lazily formatted text (`withInformationalResponse`) sees the change. */
++function stripSkillInstructionsFromAgentNote(result: unknown): void {
++    if (!isRecord(result) || typeof result['_agentNote'] !== 'string') {
++        return
++    }
++    const note = stripSkillInstructions(result['_agentNote'])
++    if (note) {
++        result['_agentNote'] = note
++    } else {
++        delete result['_agentNote']
++    }
++}
++
+ function batchedCommandMessage(commands: string[]): string {
+     const listed = commands.slice(0, MAX_LISTED_BATCH_COMMANDS)
+     const more = commands.length - listed.length
+@@ -1832,6 +1853,7 @@ export function createExecTool(
+     const ExecSchema = makeExecSchema(commandReference)
+     const flagGatedTools = options.flagGatedTools ?? []
+     const requireDestructiveConfirmation = options.requireDestructiveConfirmation ?? true
++    const skillsAvailable = options.skillsAvailable ?? true
+ 
+     return {
+         name: 'exec',
+@@ -2080,7 +2102,7 @@ export function createExecTool(
+                     // validation: fields with a Zod `.default()` (e.g. a query `kind` discriminator)
+                     // are optional and auto-filled. The default `io: 'output'` would list them as
+                     // required, misrepresenting them as mandatory input the caller must supply.
+-                    const fullSchema = agentFacingInputSchema(tool)
++                    const fullSchema = agentFacingInputSchema(tool, skillsAvailable)
+                     // YAML for the top shape, but inputSchema stays as a JSON
+                     // string dumped inside the YAML — JSON Schema is conventionally
+                     // JSON and converting it to YAML obscures `$ref`, `oneOf`, etc.
+@@ -2094,7 +2116,7 @@ export function createExecTool(
+                     const topShape = {
+                         name: tool.name,
+                         title: tool.title,
+-                        description: tool.description,
++                        description: agentFacingText(tool.description, skillsAvailable),
+                         annotations: tool.annotations,
+                     }
+                     const fullOutput = serialize(topShape, fullSchema)
+@@ -2133,7 +2155,7 @@ export function createExecTool(
+                     )
+                     // See the `info` command: `io: 'input'` keeps this in sync with the advertised
+                     // schema and validation, so `.default()` fields aren't shown as required.
+-                    const fullJsonSchema = agentFacingInputSchema(schemaTool)
++                    const fullJsonSchema = agentFacingInputSchema(schemaTool, skillsAvailable)
+ 
+                     if (!fieldPath) {
+                         // The bare `schema <tool>` view is always a summary. Any
+@@ -2277,7 +2299,7 @@ export function createExecTool(
+                         // so it can fix the call without an `info` or `schema` round trip.
+                         // Analytics keeps the short message above.
+                         throw new ToolInputValidationError(
+-                            `${message}${describeFailingFieldSchemas(tool, validation.error.issues)}`,
++                            `${message}${describeFailingFieldSchemas(tool, validation.error.issues, skillsAvailable)}`,
+                             describeValidationError(validation.error, toolSchema)
+                         )
+                     }
+@@ -2320,6 +2342,9 @@ export function createExecTool(
+                         throw err
+                     }
+                     const durationMs = Date.now() - startedAt
++                    if (!skillsAvailable) {
++                        stripSkillInstructionsFromAgentNote(result)
++                    }
+                     // The text path below builds no payload, so emptiness is reported from here.
+                     const resultShape = isEmptyToolResult(result, tool.name) ? { result_empty: true } : {}
+                     const formattedOverride =
+diff --git a/services/mcp/src/tools/skill-mentions.ts b/services/mcp/src/tools/skill-mentions.ts
+new file mode 100644
+index 00000000000..b3298a762d1
+--- /dev/null
++++ b/services/mcp/src/tools/skill-mentions.ts
+@@ -0,0 +1,126 @@
++/**
++ * Tool descriptions and `_agentNote`s tell the agent to load a named PostHog skill
++ * ("Load the building-a-dashboard skill before you create or change a dashboard").
++ * When this connection has no `learn` command there is no way to load one, so an agent
++ * that follows the text stalls or guesses. These rewrites drop the skill step and keep
++ * whatever else the sentence asked for.
++ *
++ * Only a kebab-case skill name followed by "skill" counts, so prose about the agent
++ * skills store (`skill-get`, "a custom scout skill") is left alone.
++ */
++
++/** A skill named the way the catalog names them: `building-a-dashboard skill`. */
++const SKILL = String.raw`\x60?(?!built-in\b)(?<![\w-])[a-z0-9]+(?:-[a-z0-9]+)+\x60?\s+skills?\b`
++const SKILL_MENTION = new RegExp(SKILL)
++
++/** A sentence that only says what the skill just dropped covers ("It covers when to …"). */
++const SKILL_FOLLOW_UP = /^\s*(?:It|This skill|The skill)\s+(?:covers|explains|describes|carries|has)\b/
++
++/** Clause rewrites, tried before whole sentences are dropped. Whitespace is `\s+`
++ *  because the RULES blocks wrap mid-sentence. */
++const CLAUSE_REWRITES: ReadonlyArray<readonly [RegExp, string | ((...groups: string[]) => string)]> = [
++    // "(the investigate-metric skill describes how)": an aside about the skill.
++    [new RegExp(String.raw`\s*\((?:see\s+)?the\s+${SKILL}[^)]*\)`, 'g'), ''],
++    // "(design JSON for PostHog's visual email editor — schema in the designing-email-templates skill)"
++    // "references — load the finding-experiments skill for guidance on …": the whole aside goes.
++    [new RegExp(String.raw`\s+[—–]\s+[^.;()—–]*?${SKILL}[^.;()]*`, 'g'), ''],
++    // "…until status is Completed, then follow the downloading-batch-export-files skill to …"
++    [new RegExp(String.raw`,\s+then\s+(?:follow|load|read|use)\s+the\s+${SKILL}[^.]*`, 'gi'), ''],
++    // "use the `authoring-error-tracking-alerts` skill (or the `error-tracking-alerts-create` tool)"
++    [
++        new RegExp(String.raw`\buse\s+the\s+${SKILL}\s+\(or\s+the\s+(\S+)\s+tool\)`, 'gi'),
++        (_m, tool) => `use the ${tool} tool`,
++    ],
++    // "Load the configuring-experiment-analytics skill before constructing the query, and use read-data-schema …"
++    [
++        new RegExp(String.raw`\b(?:load|read|use)\s+the\s+${SKILL}[^.,]*,\s+and\s+(\w)`, 'gi'),
++        (_m, first) => first!.toUpperCase(),
++    ],
++    // "…(e.g. "25%"), load the configuring-experiment-rollout skill and ask the user…"
++    [new RegExp(String.raw`\b(?:load|read|use)\s+the\s+${SKILL}\s+and\s+`, 'gi'), ''],
++    // "If you don't have the ID, load the finding-experiments skill to resolve the user's reference first."
++    [new RegExp(String.raw`(,\s+)load\s+the\s+${SKILL}\s+to\s+`, 'gi'), '$1'],
++    // "If adding or changing metrics, load the configuring-experiment-analytics skill first. Call …"
++    [new RegExp(String.raw`[^.\n]*?,\s+load\s+the\s+${SKILL}\s+first\.\s*`, 'g'), ''],
++]
++
++/** Splits text into sentences, keeping each one's trailing whitespace so the text
++ *  reassembles exactly. "e.g." does not end a sentence. */
++function sentences(text: string): string[] {
++    const parts: string[] = []
++    const boundary = /(?<!\be\.g|\bi\.e)[.!?](?=\s|$)\s*|\n[ \t]*\n\s*/g
++    let start = 0
++    for (let match = boundary.exec(text); match; match = boundary.exec(text)) {
++        const end = match.index + match[0].length
++        parts.push(text.slice(start, end))
++        start = end
++    }
++    if (start < text.length) {
++        parts.push(text.slice(start))
++    }
++    return parts
++}
++
++/** Renumbers a `1.` `2.` … list after an item was removed, and drops an item left empty. */
++function renumberLists(text: string): string {
++    const lines = text.split('\n')
++    let next = 1
++    let inList = false
++    const out: string[] = []
++    for (const line of lines) {
++        const item = /^(\d+)\.(\s*)(.*)$/.exec(line)
++        if (item) {
++            if (!item[3]!.trim()) {
++                continue
++            }
++            if (!inList) {
++                next = 1
++                inList = true
++            }
++            out.push(`${next}.${item[2] || ' '}${item[3]}`)
++            next += 1
++            continue
++        }
++        // A blank line or an indented continuation keeps the list open; prose closes it.
++        if (inList && line.trim() !== '' && !/^\s/.test(line)) {
++            inList = false
++        }
++        out.push(line)
++    }
++    return out.join('\n')
++}
++
++/** Removes the instructions to load a named skill from tool text, for a connection
++ *  where skills cannot be loaded. Text that names no skill comes back unchanged. */
++export function stripSkillInstructions(text: string): string {
++    if (!SKILL_MENTION.test(text)) {
++        return text
++    }
++    let rewritten = text
++    for (const [pattern, replacement] of CLAUSE_REWRITES) {
++        rewritten = rewritten.replace(pattern, replacement as string)
++    }
++    // Whatever still names a skill is a sentence about loading it: drop the sentence,
++    // and a following one that only describes what the skill covers.
++    const kept: string[] = []
++    let droppedPrevious = false
++    for (const sentence of sentences(rewritten)) {
++        if (SKILL_MENTION.test(sentence) || (droppedPrevious && SKILL_FOLLOW_UP.test(sentence))) {
++            droppedPrevious = true
++            // Keep a paragraph break or line break that ended the dropped sentence.
++            const trailing = /\s*$/.exec(sentence)?.[0] ?? ''
++            if (trailing.includes('\n')) {
++                kept.push(trailing)
++            }
++            continue
++        }
++        droppedPrevious = false
++        kept.push(sentence)
++    }
++    rewritten = kept.join('')
++    rewritten = renumberLists(rewritten)
++    return rewritten
++        .replace(/[ \t]+\n/g, '\n')
++        .replace(/\n{3,}/g, '\n\n')
++        .trim()
++}
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+index 52e6223ce13..709789394d2 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+@@ -262,7 +262,7 @@ When work produces something worth keeping, pick the artifact before you start b
+ 
+ **Notebook** (`search notebooks-` for the tools) — the default for an analysis with a narrative: a question investigated step by step, where the reader needs the reasoning, the intermediate steps, and the caveats, not just the final number. Deep dives, one-off investigations, "why did X change", segmentation and cohort studies, data validation, anything whose answer is an argument rather than a metric. Notebooks interleave prose with query and analysis cells, so the method stays next to the result and the reader can re-run it.
+ 
+-**Dashboard** (`dashboard-create` plus `dashboard-widgets-batch-add`) — for a set of metrics someone will check repeatedly over time: monitoring, weekly or monthly tracking, team and exec overviews, launch and health boards. Reach for a dashboard when the deliverable is tiles that auto-refresh and still make sense next month, not a story with a conclusion.
++**Dashboard** (`dashboard-create`, then `insight-create` with `dashboards: [<dashboard id>]` for each insight tile; `dashboard-widgets-batch-add` adds only non-insight widgets) — for a set of metrics someone will check repeatedly over time: monitoring, weekly or monthly tracking, team and exec overviews, launch and health boards. Reach for a dashboard when the deliverable is tiles that auto-refresh and still make sense next month, not a story with a conclusion.
+ 
+ **Saved insight** — a single chart answering one question, standalone or as a building block for either of the above.
+ 
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-instructions.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-instructions.txt
+index 753be71b2df..b6f412b0200 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-instructions.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-instructions.txt
+@@ -5,6 +5,4 @@ business-knowledge-documents|dashboard|docs-search|execute-sql|feature-flag|proj
+ # Tools
+ 
+ exec – run any PostHog command; its `command` description has the syntax.
+-render-ui – show a tool result as an interactive app.
+-
+-Prioritize skills over tools.
+\ No newline at end of file
++render-ui – show a tool result as an interactive app.
+\ No newline at end of file
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/tools-instructions.txt b/services/mcp/tests/unit/__snapshots__/instructions/tools-instructions.txt
+index 3272d6ca605..4289eab8232 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/tools-instructions.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/tools-instructions.txt
+@@ -169,7 +169,7 @@ When work produces something worth keeping, pick the artifact before you start b
+ 
+ **Notebook** (`search notebooks-` for the tools) — the default for an analysis with a narrative: a question investigated step by step, where the reader needs the reasoning, the intermediate steps, and the caveats, not just the final number. Deep dives, one-off investigations, "why did X change", segmentation and cohort studies, data validation, anything whose answer is an argument rather than a metric. Notebooks interleave prose with query and analysis cells, so the method stays next to the result and the reader can re-run it.
+ 
+-**Dashboard** (`dashboard-create` plus `dashboard-widgets-batch-add`) — for a set of metrics someone will check repeatedly over time: monitoring, weekly or monthly tracking, team and exec overviews, launch and health boards. Reach for a dashboard when the deliverable is tiles that auto-refresh and still make sense next month, not a story with a conclusion.
++**Dashboard** (`dashboard-create`, then `insight-create` with `dashboards: [<dashboard id>]` for each insight tile; `dashboard-widgets-batch-add` adds only non-insight widgets) — for a set of metrics someone will check repeatedly over time: monitoring, weekly or monthly tracking, team and exec overviews, launch and health boards. Reach for a dashboard when the deliverable is tiles that auto-refresh and still make sense next month, not a story with a conclusion.
+ 
+ **Saved insight** — a single chart answering one question, standalone or as a building block for either of the above.
+ 
+diff --git a/services/mcp/tests/unit/exec-learn-off-consistency.test.ts b/services/mcp/tests/unit/exec-learn-off-consistency.test.ts
+new file mode 100644
+index 00000000000..8dd86e983f1
+--- /dev/null
++++ b/services/mcp/tests/unit/exec-learn-off-consistency.test.ts
+@@ -0,0 +1,157 @@
++import { describe, expect, it } from 'vitest'
++import { z } from 'zod'
++
++import { MCP_EXEC_SKILLS_FEATURE_FLAG } from '@/hono/constants'
++import { InstructionsBuilder } from '@/hono/instructions'
++import { SessionManager } from '@/lib/SessionManager'
++import { getToolsFromContext } from '@/tools'
++import { createExecTool } from '@/tools/exec'
++import { agentFacingInputSchema, rewritePlannerWording } from '@/tools/exec-schema-view'
++import { stripSkillInstructions } from '@/tools/skill-mentions'
++import { withAgentNote } from '@/tools/tool-utils'
++import type { Context, Tool, ZodObjectAny } from '@/tools/types'
++
++import { makeToolExecutorState } from '../shared/test-utils'
++
++const context = {
++    api: {} as any,
++    cache: {} as any,
++    env: {} as any,
++    stateManager: { getApiKey: async () => ({ scopes: ['*'] }), getAiConsentGiven: async () => true } as any,
++    sessionManager: new SessionManager({} as any),
++    getDistinctId: async () => 'd',
++    trackEvent: async () => {},
++} as Context
++
++describe('stripSkillInstructions', () => {
++    it.each([
++        [
++            'drops a sentence that only loads a skill, and the one saying what it covers',
++            'Create a dashboard. Load the building-a-dashboard skill before you create or change a dashboard. It covers layout. Pick tiles.',
++            'Create a dashboard. Pick tiles.',
++        ],
++        [
++            'keeps the rest of a sentence that also asks for something else',
++            'Load the configuring-experiment-analytics skill before constructing the query, and use read-data-schema to confirm event names.',
++            'Use read-data-schema to confirm event names.',
++        ],
++        [
++            'keeps the step around an inline skill instruction',
++            "If you don't have the ID, load the finding-experiments skill to resolve the user's reference first.",
++            "If you don't have the ID, resolve the user's reference first.",
++        ],
++        [
++            'keeps the alternative a sentence offers',
++            'To act, use the `authoring-error-tracking-alerts` skill (or the `error-tracking-alerts-create` tool).',
++            'To act, use the `error-tracking-alerts-create` tool.',
++        ],
++        [
++            'drops an aside about a skill and keeps its sentence',
++            'Provide design (design JSON for the editor — schema in the designing-email-templates skill); the email is compiled from it.',
++            'Provide design (design JSON for the editor); the email is compiled from it.',
++        ],
++        [
++            'renumbers a RULES list after removing an item',
++            'RULES:\n1. Load the creating-experiments skill for the full\n   creation workflow.\n\n2. Do NOT pass metrics on creation.\n\nCreates an experiment.',
++            'RULES:\n\n1. Do NOT pass metrics on creation.\n\nCreates an experiment.',
++        ],
++    ])('%s', (_label, input, expected) => {
++        expect(stripSkillInstructions(input)).toBe(expected)
++    })
++
++    it('leaves text about the agent skills store alone', () => {
++        const text =
++            'Get a specific agent skill by name. Load a built-in skill with `learn posthog:<skill>` when the `learn` command is available.'
++        expect(stripSkillInstructions(text)).toBe(text)
++    })
++})
++
++describe('exec text when skills cannot be loaded', () => {
++    function noteTool(note: string): Tool<ZodObjectAny> {
++        return {
++            name: 'dashboard-create',
++            title: 'Create dashboard',
++            description:
++                'Create a dashboard. Load the building-a-dashboard skill before you create or change a dashboard.',
++            schema: z.object({}),
++            scopes: [],
++            annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
++            handler: async () => withAgentNote({ id: 7 }, note),
++        }
++    }
++    const NOTE =
++        'If you have not loaded the building-a-dashboard skill in this conversation, load it now, before you add tiles. Consider offering a subscription.'
++
++    it('drops the skill step from info and from the _agentNote', async () => {
++        const exec = createExecTool([noteTool(NOTE)], context, 'd', 'r', undefined, undefined, [], {
++            skillsAvailable: false,
++        })
++        const info = (await exec.handler(context, { command: 'info dashboard-create' })) as string
++        expect(info).not.toContain('building-a-dashboard')
++        const call = (await exec.handler(context, { command: 'call --json dashboard-create {}' })) as string
++        expect(JSON.parse(call)._agentNote).toBe('Consider offering a subscription.')
++    })
++
++    it('keeps the skill step where skills can be loaded', async () => {
++        const exec = createExecTool([noteTool(NOTE)], context, 'd', 'r', undefined)
++        const call = (await exec.handler(context, { command: 'call --json dashboard-create {}' })) as string
++        expect(JSON.parse(call)._agentNote).toBe(NOTE)
++    })
++
++    it('names no skill in the real experiment, dashboard and survey tools', async () => {
++        const tools = await getToolsFromContext(context)
++        const exec = createExecTool(tools, context, 'd', 'r', undefined, undefined, [], { skillsAvailable: false })
++        for (const name of ['experiment-create', 'experiment-update', 'dashboard-create', 'survey-create']) {
++            const info = (await exec.handler(context, { command: `info ${name}` })) as string
++            expect(info, name).not.toMatch(/[a-z0-9]+(?:-[a-z0-9]+)+`? skills?\b/)
++        }
++    })
++})
++
++describe('planner wording', () => {
++    it('rewrites the PostHog AI planner sentences', () => {
++        expect(rewritePlannerWording('Use one of the properties the user has provided in the plan.')).toBe(
++            'Use a property that exists in the project.'
++        )
++        expect(rewritePlannerWording('Action name from the plan.')).toBe('Action name.')
++        expect(rewritePlannerWording('No planner words here.')).toBe('No planner words here.')
++    })
++
++    it('leaves no plan wording in the schemas exec shows, without touching the tool schema', async () => {
++        const tools = await getToolsFromContext(context)
++        const retention = tools.find((tool) => tool.name === 'query-retention')!
++        const source = JSON.stringify(z.toJSONSchema(retention.schema, { io: 'input' }))
++        expect(source).toMatch(/\b(in|from) the plan\b/)
++        expect(JSON.stringify(agentFacingInputSchema(retention))).not.toMatch(/\b(in|from) the plan\b/)
++        const exec = createExecTool(tools, context, 'd', 'r', undefined)
++        const drilled = (await exec.handler(context, {
++            command: 'schema query-retention retentionFilter.targetEntity',
++        })) as string
++        expect(drilled).not.toMatch(/\b(in|from) the plan\b/)
++    })
++})
++
++describe('instructions when learn is off', () => {
++    const builder = new InstructionsBuilder('guidelines')
++    const tools = ['dashboard-create', 'insight-create', 'dashboard-widgets-batch-add', 'execute-sql'].map((name) => ({
++        name,
++    }))
++
++    it('does not ask to prioritize skills without the skills flag', () => {
++        const off = builder.build(makeToolExecutorState(tools, { useSingleExec: true }))
++        expect(off).not.toContain('Prioritize skills over tools.')
++        const on = builder.build(
++            makeToolExecutorState(tools, {
++                useSingleExec: true,
++                toolFeatureFlags: { [MCP_EXEC_SKILLS_FEATURE_FLAG]: true },
++            })
++        )
++        expect(on).toContain('Prioritize skills over tools.')
++    })
++
++    it('names insight-create with dashboards for insight tiles', () => {
++        const reference = builder.buildExecCommandReference(makeToolExecutorState(tools, { useSingleExec: true }))
++        expect(reference).toContain('`insight-create` with `dashboards: [<dashboard id>]` for each insight tile')
++        expect(reference).not.toContain('`dashboard-create` plus `dashboard-widgets-batch-add`')
++    })
++})
+diff --git a/services/mcp/tests/unit/exec-validate-first.test.ts b/services/mcp/tests/unit/exec-validate-first.test.ts
+index 78868480d11..ca9092880f2 100644
+--- a/services/mcp/tests/unit/exec-validate-first.test.ts
++++ b/services/mcp/tests/unit/exec-validate-first.test.ts
+@@ -109,6 +109,7 @@ describe('a failed call carries the failing field schema', () => {
+         expect(retention.message).toMatch(/same as retentionFilter\.(returningEntity|targetEntity)/)
+         expect(retention.message).toContain('"id"')
+         expect(retention.message.length).toBeLessThan(MAX_ERROR_SCHEMA_CHARS + 1_000)
++        expect(retention.message).not.toMatch(/\b(in|from) the plan\b/)
+     })
+ })
+ 
+-- 
+2.50.1 (Apple Git-155)
+

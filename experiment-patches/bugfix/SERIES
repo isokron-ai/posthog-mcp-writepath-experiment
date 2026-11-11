@@ -1,0 +1,22 @@
+# Bug-fix series: the FIXED build is PostHog/posthog 7b516983 plus these patches, in this order (one file per line;
+# '#' starts a comment). Apply at the repository root: git am (or git apply) each file in turn.
+# PostHog PR #131514 comes first (it regenerates generated tool files), then the fixes in their filing order.
+# V6, X2, X3, X4 and Q5 all edit services/mcp/src/tools/exec.ts; X4 must come after X2.
+#
+# Not in this series: K3 (fix(error-tracking): point the suppression skill at the rule update tool). It edits
+# products/error_tracking/skills/suppressing-noisy-errors/SKILL.md, which is outside the files this repository imports
+# and outside the sparse checkout the measured builds used, so it was not applied to any measured build.
+PR131514-0001-fix-mcp-stop-coercing-booleans-and-nullable-integers.patch
+PR131514-0002-chore-mcp-regenerate-tool-schemas.patch
+V1-0001-fix-mcp-accept-real-comment-ids-in-tasks-comments-re.patch
+V6-0001-fix-mcp-keep-the-next-page-hint-on-exec-text-results.patch
+V5-0001-fix-mcp-apply-the-project-test-account-default-to-ac.patch
+X3-0001-fix-mcp-reject-a-non-object-exec-call-body-with-a-ty.patch
+X2-0001-fix-mcp-accept-any-whitespace-between-exec-command-p.patch
+X4-0001-fix-mcp-read-flags-and-extra-input-after-the-tool-na.patch
+Q5-0001-fix-mcp-keep-search-notes-when-a-scope-gated-tool-al.patch
+K1-0001-fix-mcp-match-search-keywords-in-hosted-exec-search.patch
+P4-0001-fix-mcp-stop-hinting-at-tools-gated-on-server-minted.patch
+R3-0001-fix-mcp-leave-the-api-host-out-of-403-and-429-error-.patch
+V2-0001-fix-mcp-trim-the-user-settings-update-response-like-.patch
+J1-0001-fix-mcp-stop-returning-an-unreadable-2xx-body-as-a-t.patch

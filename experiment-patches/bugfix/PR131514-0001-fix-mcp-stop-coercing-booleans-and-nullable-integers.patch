@@ -1,0 +1,196 @@
+From 19feec97ca193bda20c707fca9dc71292b27763e Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 11:23:08 -0700
+Subject: [PATCH 1/2] fix(mcp): stop coercing booleans and nullable integers in
+ generated schemas
+
+z.coerce.boolean() reads the string "false" as true, so an MCP client that
+sends booleans as strings saves the opposite value (for example
+chartSettings.showLegend on a SQL insight). Booleans are now strict.
+
+A union member that refs the shared `integer` definition reused its
+coercing const, so `aggregation_group_type_index: null` became 0, which is
+a real group type. Such members are now inlined as strict primitives.
+
+Lone number fields keep z.coerce.number().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../mcp/scripts/lib/json-schema-to-zod.ts     | 32 +++++++++++-
+ .../mcp/tests/unit/json-schema-to-zod.test.ts | 49 ++++++++++++++++++-
+ .../tests/unit/query-wrapper-factory.test.ts  |  5 +-
+ .../unit/query-wrappers-generated.test.ts     | 13 +++++
+ 4 files changed, 92 insertions(+), 7 deletions(-)
+
+diff --git a/services/mcp/scripts/lib/json-schema-to-zod.ts b/services/mcp/scripts/lib/json-schema-to-zod.ts
+index 45e195ea4c4..f25ffabcf95 100644
+--- a/services/mcp/scripts/lib/json-schema-to-zod.ts
++++ b/services/mcp/scripts/lib/json-schema-to-zod.ts
+@@ -109,6 +109,17 @@ function schemaToZod(schema: JsonSchema, ctx: ConvertContext, opts?: { strictPri
+     // $ref
+     if (schema.$ref) {
+         const refName = schema.$ref.replace('#/definitions/', '')
++        // A union member that refs a bare primitive definition (e.g. `integer`) must
++        // not reuse the shared named const: that const is emitted once, for lone
++        // fields, so it coerces, and `z.union([integer, z.null()])` would turn
++        // `null` into 0. Inline the definition with the same strict rule as other
++        // union members.
++        if (opts?.strictPrimitives) {
++            const target = ctx.root.definitions[refName]
++            if (target && isBarePrimitive(target)) {
++                return applyNumericConstraints(schemaToZod(target, ctx, { strictPrimitives: true }), schema)
++            }
++        }
+         // Field-level numeric constraints (e.g. `@maximum 200` on a property
+         // typed as `positive_integer`) sit on the referencing schema, not the
+         // ref target. Apply them on top of the named ref.
+@@ -222,8 +233,25 @@ function applyNumericConstraints(expr: string, schema: JsonSchema): string {
+     return out
+ }
+ 
++/** A definition that is just a number, integer or boolean type, optionally with numeric bounds. */
++function isBarePrimitive(schema: JsonSchema): boolean {
++    return (
++        typeof schema.type === 'string' &&
++        ['integer', 'number', 'boolean'].includes(schema.type) &&
++        !schema.$ref &&
++        !schema.anyOf &&
++        !schema.oneOf &&
++        !schema.allOf &&
++        schema.enum === undefined &&
++        schema.const === undefined
++    )
++}
++
+ /**
+- * Use z.coerce for numbers/booleans — some MCP clients send primitives as strings.
++ * Lone number fields use z.coerce.number() because some MCP clients send numbers as strings.
++ * Booleans are never coerced: Boolean("false") is true, so a client that sends
++ * booleans as strings would get the opposite of what it asked for. A wrong type is a
++ * validation error that names the field instead.
+  * `strict` disables coercion for primitives that sit inside a union, where a
+  * coercing branch would greedily swallow inputs meant for later branches.
+  */
+@@ -236,7 +264,7 @@ function primitiveToZod(type: string, strict = false): string {
+         case 'integer':
+             return strict ? 'z.number().int()' : 'z.coerce.number().int()'
+         case 'boolean':
+-            return strict ? 'z.boolean()' : 'z.coerce.boolean()'
++            return 'z.boolean()'
+         case 'null':
+             return 'z.null()'
+         default:
+diff --git a/services/mcp/tests/unit/json-schema-to-zod.test.ts b/services/mcp/tests/unit/json-schema-to-zod.test.ts
+index 789cb74a428..639f5a0cd5a 100644
+--- a/services/mcp/tests/unit/json-schema-to-zod.test.ts
++++ b/services/mcp/tests/unit/json-schema-to-zod.test.ts
+@@ -1,4 +1,5 @@
+ import { describe, expect, it } from 'vitest'
++import { z } from 'zod'
+ 
+ import { generateZodFromSchemaRef } from '../../scripts/lib/json-schema-to-zod'
+ 
+@@ -90,7 +91,7 @@ describe('generateZodFromSchemaRef — union primitive strictness', () => {
+         expect(out).not.toContain('z.coerce')
+     })
+ 
+-    it('keeps coercion on lone primitive fields', () => {
++    it('keeps coercion on lone number fields but never coerces booleans', () => {
+         const root = {
+             definitions: {
+                 Subject: {
+@@ -103,6 +104,50 @@ describe('generateZodFromSchemaRef — union primitive strictness', () => {
+         const out = generateZodFromSchemaRef(root, 'Subject')
+ 
+         expect(out).toContain('z.coerce.number()')
+-        expect(out).toContain('z.coerce.boolean()')
++        expect(out).toContain('flag: z.boolean()')
++        expect(out).not.toContain('z.coerce.boolean()')
++    })
++})
++
++describe('generateZodFromSchemaRef — parsed values', () => {
++    // Runs the emitted source with zod, so these check what a caller actually gets back.
++    function build(definitions: Record<string, unknown>): z.ZodTypeAny {
++        const code = generateZodFromSchemaRef(
++            { definitions } as Parameters<typeof generateZodFromSchemaRef>[0],
++            'Subject'
++        )
++        return new Function('z', `${code}\nreturn Subject`)(z) as z.ZodTypeAny
++    }
++
++    const subject = build({
++        integer: { type: 'integer' },
++        Subject: {
++            type: 'object',
++            properties: {
++                flag: { type: 'boolean' },
++                count: { type: 'number' },
++                group: { anyOf: [{ $ref: '#/definitions/integer' }, { type: 'null' }] },
++            },
++        },
++    })
++
++    // Boolean("false") is true, so a coercing boolean flips a caller's string "false".
++    // The shared `integer` const coerces for lone fields, so reusing it inside a union
++    // turns null into 0, which is a real group type index.
++    it.each([
++        { label: 'boolean false', input: { flag: false }, expected: { flag: false } },
++        { label: 'boolean true', input: { flag: true }, expected: { flag: true } },
++        { label: 'numeric string for a lone number', input: { count: '5' }, expected: { count: 5 } },
++        { label: 'null for an integer-or-null ref', input: { group: null }, expected: { group: null } },
++        { label: 'integer for an integer-or-null ref', input: { group: 1 }, expected: { group: 1 } },
++    ])('keeps $label', ({ input, expected }) => {
++        expect(subject.parse(input)).toEqual(expected)
++    })
++
++    it.each([
++        { label: 'the string "false" for a boolean', input: { flag: 'false' } },
++        { label: 'an empty string for an integer-or-null ref', input: { group: '' } },
++    ])('rejects $label', ({ input }) => {
++        expect(subject.safeParse(input).success).toBe(false)
+     })
+ })
+diff --git a/services/mcp/tests/unit/query-wrapper-factory.test.ts b/services/mcp/tests/unit/query-wrapper-factory.test.ts
+index 750e707de67..2b17419efac 100644
+--- a/services/mcp/tests/unit/query-wrapper-factory.test.ts
++++ b/services/mcp/tests/unit/query-wrapper-factory.test.ts
+@@ -396,9 +396,8 @@ describe('createQueryWrapper filterTestAccounts project default', () => {
+     it.each(['false', 'true'])('rejects the string %j rather than coercing it to a boolean', (stringValue) => {
+         const tool = createQueryWrapper({ name: 'test', schema: makeSchema(false), kind: 'TrendsQuery' })()
+ 
+-        // The generated schemas use z.coerce.boolean(), which would turn "false"
+-        // into true; the stripped replacement must be a strict boolean so a
+-        // malformed value is rejected instead of silently flipping filtering.
++        // The fixture field is z.coerce.boolean(), which turns "false" into true,
++        // so a pass proves the factory swaps in a strict boolean of its own.
+         expect(tool.schema.safeParse({ series, filterTestAccounts: stringValue }).success).toBe(false)
+     })
+ 
+diff --git a/services/mcp/tests/unit/query-wrappers-generated.test.ts b/services/mcp/tests/unit/query-wrappers-generated.test.ts
+index 621d352fe5d..df7111eb0c6 100644
+--- a/services/mcp/tests/unit/query-wrappers-generated.test.ts
++++ b/services/mcp/tests/unit/query-wrappers-generated.test.ts
+@@ -139,6 +139,19 @@ describe('generated query wrappers', () => {
+         }
+     })
+ 
++    it.each([
++        ['a stringified boolean', { trendsFilter: { showLegend: 'false' } }, false],
++        ['an empty number', { aggregation_group_type_index: '' }, false],
++        ['a null for a nullable number', { aggregation_group_type_index: null }, true],
++    ])('validates %s on query-trends without coercing it to a different value', (_case, input, expected) => {
++        const tool = GENERATED_TOOLS['query-trends']!()
++        const result = tool.schema.safeParse({ ...insightQueries[0][1], ...input })
++
++        expect(result.success ? result.data : 'rejected').toEqual(
++            expected ? expect.objectContaining(input) : 'rejected'
++        )
++    })
++
+     it.each([
+         ['zero interval count', 0, false],
+         ['one interval', 1, true],
+-- 
+2.50.1 (Apple Git-155)
+

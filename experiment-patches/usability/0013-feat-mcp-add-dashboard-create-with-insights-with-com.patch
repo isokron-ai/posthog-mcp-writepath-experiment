@@ -1,0 +1,955 @@
+From a086bcd4b58856ae613488db62c25bf8b63ba81b Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 14:01:41 -0700
+Subject: [PATCH 13/17] feat(mcp): add dashboard-create-with-insights with
+ compensating rollback
+
+One call creates a dashboard and all of its insight tiles. Job 1 of the
+2026-11-10 friction session (five tiles and a reorder) took
+dashboard-create, five insight-create calls, three prescribed
+re-queries, an info and a reorder, with an 11,175-token reorder echo.
+
+- Validate before writing anything: each new tile's query is checked
+  against insight-create's own query schema and, with validate: "run"
+  (the default), run once through the query API (the source of a
+  visualization node, not the wrapper); each existing insight is read,
+  and a duplicate is refused. Any failure lists every failing tile and
+  creates nothing.
+- Then create the dashboard and the tiles in order: a new insight
+  created onto the dashboard, or an existing insight attached through a
+  version-checked update of its `dashboards` list. `layout` arranges the
+  tiles with the reorder endpoint in the given order.
+- If a later step fails, a CompensationLog (compensation.ts) undoes what
+  this call wrote, newest first: created insights and the dashboard are
+  soft-deleted, attached insights are detached again. The error names
+  the failed step, what was rolled back and anything that could not be.
+  The REST API has no transaction, so the description says other readers
+  can briefly see the partial dashboard.
+- The receipt is trimmed to the dashboard id, name and url, and per tile
+  its position, insight id, short_id and tile id. Tile ids come from the
+  insights' own dashboard_tiles, so no dashboard re-read is needed.
+- dry_run validates and returns the plan without writing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/tool-definitions-all.json |  26 ++
+ services/mcp/schema/tool-definitions.json     |  26 ++
+ services/mcp/src/tools/atomic/compensation.ts |  83 +++++
+ .../atomic/dashboardCreateWithInsights.ts     | 341 ++++++++++++++++++
+ services/mcp/src/tools/atomic/index.ts        |   3 +
+ .../dashboard-create-with-insights.json       | 101 ++++++
+ ...mic-dashboard-create-with-insights.test.ts | 260 +++++++++++++
+ 7 files changed, 840 insertions(+)
+ create mode 100644 services/mcp/src/tools/atomic/compensation.ts
+ create mode 100644 services/mcp/src/tools/atomic/dashboardCreateWithInsights.ts
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create-with-insights.json
+ create mode 100644 services/mcp/tests/unit/atomic-dashboard-create-with-insights.test.ts
+
+diff --git a/services/mcp/schema/tool-definitions-all.json b/services/mcp/schema/tool-definitions-all.json
+index e2ed8c5cde0..ff0e33aa23a 100644
+--- a/services/mcp/schema/tool-definitions-all.json
++++ b/services/mcp/schema/tool-definitions-all.json
+@@ -4168,6 +4168,32 @@
+             "readOnlyHint": false
+         }
+     },
++    "dashboard-create-with-insights": {
++        "description": "Create a dashboard and all of its insight tiles in one call. `tiles` is the display order; each tile is a new insight ({name, description?, query}, where query is exactly what insight-create takes) or an existing one ({insight_id}). Before writing anything, every new tile's query is checked against insight-create's schema and, with `validate: \"run\"` (the default), run once through the query API; every existing insight is read. If any tile fails, nothing is created and the error lists each failing tile. Then the dashboard and tiles are created in order and, with `layout`, arranged. If a later step fails, everything this call wrote is undone (compensating rollback: created insights and the dashboard are soft-deleted, attached insights are detached again) and the error says what failed, what was rolled back and anything left behind. The REST API has no transaction, so other readers can briefly see the partial dashboard. Returns a trimmed receipt: dashboard id, name and url, and per tile its insight id, short_id and tile id. `dry_run: true` validates and returns the plan without writing. Use this instead of dashboard-create plus one insight-create per tile.",
++        "category": "Dashboards",
++        "feature": "dashboards",
++        "summary": "Create a dashboard with its insight tiles in one validated call, rolled back on failure.",
++        "title": "Create dashboard with insights",
++        "required_scopes": ["dashboard:write", "insight:write", "query:read"],
++        "api_operations": [
++            "POST /api/projects/{project_id}/dashboards/",
++            "PATCH /api/projects/{project_id}/dashboards/{id}/",
++            "GET /api/projects/{project_id}/dashboards/{id}/",
++            "POST /api/projects/{project_id}/dashboards/{id}/reorder_tiles/",
++            "POST /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/{id}/",
++            "PATCH /api/projects/{project_id}/insights/{id}/",
++            "POST /api/projects/{project_id}/query/"
++        ],
++        "search_keywords": ["dashboard", "tiles", "build dashboard", "atomic"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": false,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
+     "dashboard-delete": {
+         "description": "Delete a dashboard by ID. The dashboard will be soft-deleted and no longer appear in lists.",
+         "category": "Dashboards",
+diff --git a/services/mcp/schema/tool-definitions.json b/services/mcp/schema/tool-definitions.json
+index 213f883bab4..c6d7da3cc72 100644
+--- a/services/mcp/schema/tool-definitions.json
++++ b/services/mcp/schema/tool-definitions.json
+@@ -922,5 +922,31 @@
+             "openWorldHint": true,
+             "readOnlyHint": false
+         }
++    },
++    "dashboard-create-with-insights": {
++        "description": "Create a dashboard and all of its insight tiles in one call. `tiles` is the display order; each tile is a new insight ({name, description?, query}, where query is exactly what insight-create takes) or an existing one ({insight_id}). Before writing anything, every new tile's query is checked against insight-create's schema and, with `validate: \"run\"` (the default), run once through the query API; every existing insight is read. If any tile fails, nothing is created and the error lists each failing tile. Then the dashboard and tiles are created in order and, with `layout`, arranged. If a later step fails, everything this call wrote is undone (compensating rollback: created insights and the dashboard are soft-deleted, attached insights are detached again) and the error says what failed, what was rolled back and anything left behind. The REST API has no transaction, so other readers can briefly see the partial dashboard. Returns a trimmed receipt: dashboard id, name and url, and per tile its insight id, short_id and tile id. `dry_run: true` validates and returns the plan without writing. Use this instead of dashboard-create plus one insight-create per tile.",
++        "category": "Dashboards",
++        "feature": "dashboards",
++        "summary": "Create a dashboard with its insight tiles in one validated call, rolled back on failure.",
++        "title": "Create dashboard with insights",
++        "required_scopes": ["dashboard:write", "insight:write", "query:read"],
++        "api_operations": [
++            "POST /api/projects/{project_id}/dashboards/",
++            "PATCH /api/projects/{project_id}/dashboards/{id}/",
++            "GET /api/projects/{project_id}/dashboards/{id}/",
++            "POST /api/projects/{project_id}/dashboards/{id}/reorder_tiles/",
++            "POST /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/{id}/",
++            "PATCH /api/projects/{project_id}/insights/{id}/",
++            "POST /api/projects/{project_id}/query/"
++        ],
++        "search_keywords": ["dashboard", "tiles", "build dashboard", "atomic"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": false,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
+     }
+ }
+diff --git a/services/mcp/src/tools/atomic/compensation.ts b/services/mcp/src/tools/atomic/compensation.ts
+new file mode 100644
+index 00000000000..07f3cbeff8b
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/compensation.ts
+@@ -0,0 +1,83 @@
++/**
++ * Compensating rollback for a multi-step write over separate REST calls.
++ *
++ * The REST API has no transaction that spans a dashboard and its insights, so "atomic" here means:
++ * every step that creates or changes something records how to undo it, and when a later step
++ * fails, the recorded undos run newest first. Each undo is attempted even if an earlier one fails,
++ * and the report lists what was undone and what could not be, so the agent can tell the user
++ * exactly what, if anything, was left behind.
++ *
++ * Undo is the API's own delete, which for dashboards and insights is a soft delete. Between the
++ * first write and the rollback, other readers can see the partial result.
++ */
++import { errorMessage } from './errors'
++
++export interface UndoStep {
++    /** What the step created or changed, e.g. `insight 94`. */
++    target: string
++    /** How it is undone, e.g. `soft-deleted`. */
++    action: string
++    undo: () => Promise<unknown>
++}
++
++export interface RollbackEntry {
++    target: string
++    action: string
++    status: 'undone' | 'failed'
++    error?: string
++}
++
++export interface RollbackReport {
++    entries: RollbackEntry[]
++    complete: boolean
++}
++
++export class CompensationLog {
++    private readonly steps: UndoStep[] = []
++
++    record(step: UndoStep): void {
++        this.steps.push(step)
++    }
++
++    get length(): number {
++        return this.steps.length
++    }
++
++    /** Runs every recorded undo, newest first. Never throws. */
++    async rollback(): Promise<RollbackReport> {
++        const entries: RollbackEntry[] = []
++        for (const step of [...this.steps].reverse()) {
++            try {
++                await step.undo()
++                entries.push({ target: step.target, action: step.action, status: 'undone' })
++            } catch (error) {
++                entries.push({ target: step.target, action: step.action, status: 'failed', error: errorMessage(error) })
++            }
++        }
++        this.steps.length = 0
++        return { entries, complete: entries.every((entry) => entry.status === 'undone') }
++    }
++}
++
++/** One paragraph for the agent: what was undone, and what is left with how to remove it. */
++export function describeRollback(report: RollbackReport): string {
++    if (report.entries.length === 0) {
++        return 'Nothing had been written yet, so nothing was rolled back.'
++    }
++    const undone = report.entries.filter((entry) => entry.status === 'undone')
++    const failed = report.entries.filter((entry) => entry.status === 'failed')
++    const parts: string[] = []
++    if (undone.length > 0) {
++        parts.push(`Rolled back: ${undone.map((entry) => `${entry.target} ${entry.action}`).join('; ')}.`)
++    }
++    if (failed.length > 0) {
++        parts.push(
++            `ROLLBACK INCOMPLETE, these are left behind and must be removed by hand: ` +
++                failed.map((entry) => `${entry.target} (could not be ${entry.action}: ${entry.error})`).join('; ') +
++                '.'
++        )
++    } else {
++        parts.push('Nothing from this call remains (rolled-back objects are soft-deleted, as the delete tools do).')
++    }
++    return parts.join(' ')
++}
+diff --git a/services/mcp/src/tools/atomic/dashboardCreateWithInsights.ts b/services/mcp/src/tools/atomic/dashboardCreateWithInsights.ts
+new file mode 100644
+index 00000000000..c5b58ea28a3
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/dashboardCreateWithInsights.ts
+@@ -0,0 +1,341 @@
++/**
++ * dashboard-create-with-insights: one call for a dashboard and all of its insight tiles.
++ *
++ *   1. Validate everything before writing anything: each new tile's query against insight-create's
++ *      query schema, then (by default) by running it through the query API, and each existing
++ *      insight id by reading it. Any failure returns every tile's problem and writes nothing.
++ *   2. Create the dashboard, then each tile in order: a new insight created onto the dashboard, or an
++ *      existing insight attached to it (a version-checked update of its `dashboards` list).
++ *   3. Optionally reorder and resize the tiles with the dashboard's reorder endpoint.
++ *   4. If any write fails, undo what this call wrote, newest first (compensating rollback): created
++ *      insights and the dashboard are soft-deleted, attached insights get their old dashboards list
++ *      back. The error says what failed, what was rolled back, and anything that could not be.
++ *
++ * The receipt is trimmed to ids, names, tile ids in order and the dashboard URL.
++ */
++import { z } from 'zod'
++
++import { ToolInputValidationError } from '@/lib/errors'
++import { isRecord } from '@/lib/plain-object'
++import type { Context, ToolBase } from '@/tools/types'
++
++import { CompensationLog, describeRollback } from './compensation'
++import { mapWithConcurrency } from './concurrency'
++import { AtomicWriteError, errorMessage } from './errors'
++import { type ApiObject, appUrl, insightResource, projectPath, resolveInsightId } from './resources'
++import { runnableQuery, validateInsightQuery } from './validation'
++import { versionCheckedUpdate } from './versionGuard'
++
++export const MAX_TILES = 20
++
++const NewTileSchema = z
++    .object({
++        name: z.string().min(1).max(400).describe('Insight name.'),
++        description: z.string().max(400).optional().describe('Optional, about 15 words.'),
++        query: z
++            .record(z.string(), z.unknown())
++            .describe(
++                'The insight query, exactly as insight-create takes it, e.g. {"kind":"InsightVizNode","source":{"kind":"TrendsQuery",...}} or {"kind":"DataVisualizationNode","source":{"kind":"HogQLQuery","query":"..."}}.'
++            ),
++    })
++    .strict()
++    .describe('A new insight to create on the dashboard.')
++
++const ExistingTileSchema = z
++    .object({
++        insight_id: z.union([z.number().int(), z.string().min(1)]).describe('Id or short_id of an existing insight.'),
++    })
++    .strict()
++    .describe('An existing insight to add to the dashboard.')
++
++export const DashboardCreateWithInsightsSchema = z.object({
++    name: z.string().min(1).max(400).describe('Dashboard name.'),
++    description: z.string().optional().describe('Dashboard description.'),
++    tags: z.array(z.string()).optional().describe('Dashboard tags.'),
++    pinned: z.boolean().optional().describe('Pin the dashboard in the sidebar.'),
++    tiles: z
++        .array(z.union([NewTileSchema, ExistingTileSchema]))
++        .min(1)
++        .max(MAX_TILES)
++        .describe(`The tiles in display order, at most ${MAX_TILES}. Each is a new insight or an existing one.`),
++    layout: z
++        .enum(['preserve', 'two_column', 'three_column', 'full_width'])
++        .optional()
++        .describe(
++            "Arrange the tiles in the given order. 'two_column' is 6 wide, 'three_column' 4 wide, 'full_width' 12 wide; 'preserve' keeps default sizes. Omit to keep the order the tiles were added in."
++        ),
++    validate: z
++        .enum(['run', 'schema'])
++        .optional()
++        .describe(
++            "'run' (default) runs every new tile's query once before writing anything, which catches unknown events, bad HogQL and bad filters. 'schema' checks the shape only."
++        ),
++    dry_run: z.boolean().optional().describe('Validate every tile and report the plan, without creating anything.'),
++})
++
++type Params = z.infer<typeof DashboardCreateWithInsightsSchema>
++
++type TilePlan =
++    | { index: number; kind: 'new'; name: string; description?: string | undefined; query: ApiObject }
++    | { index: number; kind: 'existing'; insightId: number; insight: ApiObject }
++
++export interface TileReceipt {
++    position: number
++    name: string | null
++    insight_id: number
++    short_id: string | null
++    tile_id: number | null
++    source: 'created' | 'attached' | 'already_on_dashboard'
++}
++
++export interface DashboardReceipt {
++    status: 'created' | 'dry_run'
++    dashboard?: { id: number; name: string; url: string }
++    tiles: (TileReceipt | { position: number; name: string | null; source: 'new' | 'existing'; insight_id?: number })[]
++    layout?: string
++    validated: 'run' | 'schema'
++}
++
++/** Check every tile. Returns the plans, or throws one error listing every tile that failed. */
++async function validateTiles(context: Context, projectId: string, params: Params): Promise<TilePlan[]> {
++    const mode = params.validate ?? 'run'
++    const problems: string[] = []
++    const plans = await mapWithConcurrency(params.tiles, 4, async (tile, index): Promise<TilePlan | undefined> => {
++        const label = `tile ${index}${'name' in tile ? ` (${tile.name})` : ''}`
++        try {
++            if ('insight_id' in tile) {
++                const insightId = await resolveInsightId(context, projectId, tile.insight_id)
++                const insight = await insightResource(context, projectId, insightId).read()
++                if (insight.deleted === true) {
++                    throw new Error(`insight ${insightId} is deleted`)
++                }
++                return { index, kind: 'existing', insightId, insight }
++            }
++            const schemaError = validateInsightQuery(tile.query)
++            if (schemaError) {
++                throw new Error(schemaError)
++            }
++            if (mode === 'run') {
++                await context.api.query({ projectId }).runQuery({ query: runnableQuery(tile.query) })
++            }
++            return { index, kind: 'new', name: tile.name, description: tile.description, query: tile.query }
++        } catch (error) {
++            problems[index] = `${label}: ${errorMessage(error)}`
++            return undefined
++        }
++    })
++    const seen = new Map<number, number>()
++    for (const plan of plans) {
++        if (plan?.kind === 'existing') {
++            const first = seen.get(plan.insightId)
++            if (first !== undefined) {
++                problems[plan.index] = `tile ${plan.index}: insight ${plan.insightId} is already tile ${first}`
++            }
++            seen.set(plan.insightId, first ?? plan.index)
++        }
++    }
++    const failed = problems.filter(Boolean)
++    if (failed.length > 0) {
++        throw new ToolInputValidationError(
++            `Nothing was created: ${failed.length} of ${params.tiles.length} tile(s) failed validation. ${failed.join(' | ')}`,
++            { fields: ['tiles'] }
++        )
++    }
++    return plans as TilePlan[]
++}
++
++/** The tile id of `insight` on `dashboardId`, from the insight's own `dashboard_tiles`. */
++function tileIdOn(insight: ApiObject, dashboardId: number): number | undefined {
++    const tiles = Array.isArray(insight.dashboard_tiles) ? insight.dashboard_tiles : []
++    const tile = tiles.find((entry) => isRecord(entry) && entry.dashboard_id === dashboardId && !entry.deleted)
++    return isRecord(tile) && typeof tile.id === 'number' ? tile.id : undefined
++}
++
++function tileIdsByInsight(dashboard: ApiObject): Map<number, number> {
++    const map = new Map<number, number>()
++    for (const tile of Array.isArray(dashboard.tiles) ? dashboard.tiles : []) {
++        if (
++            isRecord(tile) &&
++            isRecord(tile.insight) &&
++            typeof tile.insight.id === 'number' &&
++            typeof tile.id === 'number'
++        ) {
++            map.set(tile.insight.id, tile.id)
++        }
++    }
++    return map
++}
++
++const dashboardIds = (insight: ApiObject): number[] =>
++    (Array.isArray(insight.dashboards) ? insight.dashboards : [])
++        .map((entry) => (isRecord(entry) ? entry.id : entry))
++        .filter((id): id is number => typeof id === 'number')
++
++export async function dashboardCreateWithInsights(context: Context, params: Params): Promise<DashboardReceipt> {
++    const projectId = await context.stateManager.getProjectId()
++    const validated = params.validate ?? 'run'
++    const plans = await validateTiles(context, projectId, params)
++
++    if (params.dry_run) {
++        return {
++            status: 'dry_run',
++            validated,
++            ...(params.layout ? { layout: params.layout } : {}),
++            tiles: plans.map((plan) =>
++                plan.kind === 'new'
++                    ? { position: plan.index, name: plan.name, source: 'new' as const }
++                    : {
++                          position: plan.index,
++                          name: (plan.insight.name as string | null) ?? null,
++                          source: 'existing' as const,
++                          insight_id: plan.insightId,
++                      }
++            ),
++        }
++    }
++
++    const log = new CompensationLog()
++    let step = 'create the dashboard'
++    try {
++        const dashboard = await context.api.request<ApiObject>({
++            method: 'POST',
++            path: projectPath(projectId, 'dashboards/'),
++            body: {
++                name: params.name,
++                ...(params.description !== undefined ? { description: params.description } : {}),
++                ...(params.tags !== undefined ? { tags: params.tags } : {}),
++                ...(params.pinned !== undefined ? { pinned: params.pinned } : {}),
++            },
++        })
++        const dashboardId = dashboard.id as number
++        log.record({
++            target: `dashboard ${dashboardId}`,
++            action: 'soft-deleted',
++            undo: () =>
++                context.api.request({
++                    method: 'PATCH',
++                    path: projectPath(projectId, `dashboards/${dashboardId}/`),
++                    body: { deleted: true },
++                }),
++        })
++
++        // Sequential on purpose: tiles land in the order given, and a failure stops at a known step.
++        const placed: { plan: TilePlan; insight: ApiObject; source: TileReceipt['source'] }[] = []
++        for (const plan of plans) {
++            if (plan.kind === 'new') {
++                step = `create tile ${plan.index} (${plan.name})`
++                const insight = await context.api.request<ApiObject>({
++                    method: 'POST',
++                    path: projectPath(projectId, 'insights/'),
++                    body: {
++                        name: plan.name,
++                        ...(plan.description !== undefined ? { description: plan.description } : {}),
++                        query: plan.query,
++                        dashboards: [dashboardId],
++                    },
++                })
++                const insightId = insight.id as number
++                log.record({
++                    target: `insight ${insightId}`,
++                    action: 'soft-deleted',
++                    undo: () =>
++                        context.api.request({
++                            method: 'PATCH',
++                            path: projectPath(projectId, `insights/${insightId}/`),
++                            body: { deleted: true },
++                        }),
++                })
++                placed.push({ plan, insight, source: 'created' })
++                continue
++            }
++            step = `attach insight ${plan.insightId} as tile ${plan.index}`
++            const resource = insightResource(context, projectId, plan.insightId)
++            const result = await versionCheckedUpdate(resource, (current) => {
++                const ids = dashboardIds(current)
++                return ids.includes(dashboardId) ? { unchanged: true } : { body: { dashboards: [...ids, dashboardId] } }
++            })
++            if (result.status === 'ok') {
++                log.record({
++                    target: `insight ${plan.insightId}`,
++                    action: `detached from dashboard ${dashboardId}`,
++                    undo: () =>
++                        versionCheckedUpdate(resource, (current) => {
++                            const ids = dashboardIds(current)
++                            return ids.includes(dashboardId)
++                                ? { body: { dashboards: ids.filter((id) => id !== dashboardId) } }
++                                : { unchanged: true }
++                        }),
++                })
++            }
++            placed.push({
++                plan,
++                insight: result.after ?? result.before,
++                source: result.status === 'ok' ? 'attached' : 'already_on_dashboard',
++            })
++        }
++
++        // Tile ids come back on each insight's dashboard_tiles. Read the dashboard only if one is missing.
++        const tilesNow = new Map<number, number>()
++        for (const { insight } of placed) {
++            const tileId = tileIdOn(insight, dashboardId)
++            if (tileId !== undefined) {
++                tilesNow.set(insight.id as number, tileId)
++            }
++        }
++        if (tilesNow.size < placed.length) {
++            step = 'read the dashboard tiles'
++            const fromDashboard = tileIdsByInsight(
++                await context.api.request<ApiObject>({
++                    method: 'GET',
++                    path: projectPath(projectId, `dashboards/${dashboardId}/`),
++                })
++            )
++            for (const [insightId, tileId] of fromDashboard) {
++                tilesNow.set(insightId, tileId)
++            }
++        }
++        const tileOrder = placed
++            .map(({ insight }) => tilesNow.get(insight.id as number))
++            .filter((id): id is number => id !== undefined)
++
++        if (params.layout && tileOrder.length > 0) {
++            step = 'arrange the tiles'
++            await context.api.request({
++                method: 'POST',
++                path: projectPath(projectId, `dashboards/${dashboardId}/reorder_tiles/`),
++                body: { tile_order: tileOrder, layout: params.layout },
++            })
++        }
++
++        return {
++            status: 'created',
++            validated,
++            dashboard: {
++                id: dashboardId,
++                name: (dashboard.name as string) ?? params.name,
++                url: await appUrl(context, `/dashboard/${dashboardId}`),
++            },
++            ...(params.layout ? { layout: params.layout } : {}),
++            tiles: placed.map(({ plan, insight, source }) => ({
++                position: plan.index,
++                name: (insight.name as string | null) ?? null,
++                insight_id: insight.id as number,
++                short_id: (insight.short_id as string | undefined) ?? null,
++                tile_id: tilesNow.get(insight.id as number) ?? null,
++                source,
++            })),
++        }
++    } catch (error) {
++        const report = await log.rollback()
++        throw new AtomicWriteError(
++            `dashboard-create-with-insights failed at step "${step}": ${errorMessage(error)} ${describeRollback(report)}`,
++            error
++        )
++    }
++}
++
++export default (): ToolBase<typeof DashboardCreateWithInsightsSchema, DashboardReceipt> => ({
++    name: 'dashboard-create-with-insights',
++    schema: DashboardCreateWithInsightsSchema,
++    handler: dashboardCreateWithInsights,
++})
+diff --git a/services/mcp/src/tools/atomic/index.ts b/services/mcp/src/tools/atomic/index.ts
+index 26985928c6a..6790181e2b2 100644
+--- a/services/mcp/src/tools/atomic/index.ts
++++ b/services/mcp/src/tools/atomic/index.ts
+@@ -3,15 +3,18 @@
+  * services/mcp/docs/atomic-and-batch-tools.md:
+  *
+  * - batch.ts: validate every item, then write best-effort with a result per item (and dry_run)
++ * - compensation.ts: compensating rollback for a multi-step create
+  * - versionGuard.ts: version-checked read-merge-write for partial updates
+  */
+ import type { ToolBase, ZodObjectAny } from '@/tools/types'
+ 
+ import { annotationsBatchCreateTool, annotationsBatchDeleteTool } from './annotationsBatch'
++import dashboardCreateWithInsights from './dashboardCreateWithInsights'
+ import insightsBatchUpdate from './insightsBatchUpdate'
+ 
+ export const ATOMIC_TOOLS: Record<string, () => ToolBase<ZodObjectAny>> = {
+     'insights-batch-update': insightsBatchUpdate,
+     'annotations-batch-create': annotationsBatchCreateTool,
+     'annotations-batch-delete': annotationsBatchDeleteTool,
++    'dashboard-create-with-insights': dashboardCreateWithInsights,
+ }
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create-with-insights.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create-with-insights.json
+new file mode 100644
+index 00000000000..f8a6aa60983
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create-with-insights.json
+@@ -0,0 +1,101 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "description": {
++            "description": "Dashboard description.",
++            "type": "string"
++        },
++        "dry_run": {
++            "description": "Validate every tile and report the plan, without creating anything.",
++            "type": "boolean"
++        },
++        "layout": {
++            "description": "Arrange the tiles in the given order. 'two_column' is 6 wide, 'three_column' 4 wide, 'full_width' 12 wide; 'preserve' keeps default sizes. Omit to keep the order the tiles were added in.",
++            "enum": ["preserve", "two_column", "three_column", "full_width"],
++            "type": "string"
++        },
++        "name": {
++            "description": "Dashboard name.",
++            "maxLength": 400,
++            "minLength": 1,
++            "type": "string"
++        },
++        "pinned": {
++            "description": "Pin the dashboard in the sidebar.",
++            "type": "boolean"
++        },
++        "tags": {
++            "description": "Dashboard tags.",
++            "items": {
++                "type": "string"
++            },
++            "type": "array"
++        },
++        "tiles": {
++            "description": "The tiles in display order, at most 20. Each is a new insight or an existing one.",
++            "items": {
++                "anyOf": [
++                    {
++                        "additionalProperties": false,
++                        "description": "A new insight to create on the dashboard.",
++                        "properties": {
++                            "description": {
++                                "description": "Optional, about 15 words.",
++                                "maxLength": 400,
++                                "type": "string"
++                            },
++                            "name": {
++                                "description": "Insight name.",
++                                "maxLength": 400,
++                                "minLength": 1,
++                                "type": "string"
++                            },
++                            "query": {
++                                "additionalProperties": {},
++                                "description": "The insight query, exactly as insight-create takes it, e.g. {\"kind\":\"InsightVizNode\",\"source\":{\"kind\":\"TrendsQuery\",...}} or {\"kind\":\"DataVisualizationNode\",\"source\":{\"kind\":\"HogQLQuery\",\"query\":\"...\"}}.",
++                                "propertyNames": {
++                                    "type": "string"
++                                },
++                                "type": "object"
++                            }
++                        },
++                        "required": ["name", "query"],
++                        "type": "object"
++                    },
++                    {
++                        "additionalProperties": false,
++                        "description": "An existing insight to add to the dashboard.",
++                        "properties": {
++                            "insight_id": {
++                                "anyOf": [
++                                    {
++                                        "maximum": 9007199254740991,
++                                        "minimum": -9007199254740991,
++                                        "type": "integer"
++                                    },
++                                    {
++                                        "minLength": 1,
++                                        "type": "string"
++                                    }
++                                ],
++                                "description": "Id or short_id of an existing insight."
++                            }
++                        },
++                        "required": ["insight_id"],
++                        "type": "object"
++                    }
++                ]
++            },
++            "maxItems": 20,
++            "minItems": 1,
++            "type": "array"
++        },
++        "validate": {
++            "description": "'run' (default) runs every new tile's query once before writing anything, which catches unknown events, bad HogQL and bad filters. 'schema' checks the shape only.",
++            "enum": ["run", "schema"],
++            "type": "string"
++        }
++    },
++    "required": ["name", "tiles"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/atomic-dashboard-create-with-insights.test.ts b/services/mcp/tests/unit/atomic-dashboard-create-with-insights.test.ts
+new file mode 100644
+index 00000000000..f66fe42adfa
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-dashboard-create-with-insights.test.ts
+@@ -0,0 +1,260 @@
++import { describe, expect, it } from 'vitest'
++
++import { PostHogApiError, PostHogValidationError, ToolInputValidationError } from '@/lib/errors'
++import { CompensationLog, describeRollback } from '@/tools/atomic/compensation'
++import {
++    dashboardCreateWithInsights,
++    DashboardCreateWithInsightsSchema,
++    type DashboardReceipt,
++} from '@/tools/atomic/dashboardCreateWithInsights'
++import { AtomicWriteError } from '@/tools/atomic/errors'
++
++import { FakePostHog } from '../fixtures/fake-posthog-backend'
++
++const trends = (event: string): Record<string, unknown> => ({
++    kind: 'InsightVizNode',
++    source: { kind: 'TrendsQuery', series: [{ kind: 'EventsNode', event }] },
++})
++const funnel = {
++    kind: 'InsightVizNode',
++    source: {
++        kind: 'FunnelsQuery',
++        series: [
++            { kind: 'EventsNode', event: 'pageview' },
++            { kind: 'EventsNode', event: 'signup_started' },
++            { kind: 'EventsNode', event: 'signup_completed' },
++        ],
++    },
++}
++const retention = {
++    kind: 'InsightVizNode',
++    source: {
++        kind: 'RetentionQuery',
++        retentionFilter: {
++            targetEntity: { id: 'signup_completed', type: 'events' },
++            returningEntity: { id: 'pageview', type: 'events' },
++        },
++    },
++}
++const sql = { kind: 'DataVisualizationNode', source: { kind: 'HogQLQuery', query: 'SELECT 1' } }
++
++/** Job 1 of the friction session: four new tiles plus a fifth, in a chosen order. */
++const fiveTiles = (
++    existingId?: number
++): { name: string; description: string; tiles: Record<string, unknown>[]; layout: 'two_column' } => ({
++    name: 'Product overview',
++    description: 'Signups, conversion and retention',
++    tiles: [
++        { name: 'Signup errors', query: trends('signup_error') },
++        { name: 'Signup funnel', query: funnel },
++        { name: 'Daily signups', query: trends('signup_completed') },
++        { name: 'Signup retention', query: retention },
++        existingId !== undefined ? { insight_id: existingId } : { name: 'Signups by browser (SQL)', query: sql },
++    ],
++    layout: 'two_column' as const,
++})
++
++const run = (fake: FakePostHog, input: unknown): Promise<DashboardReceipt> =>
++    dashboardCreateWithInsights(fake.context(), DashboardCreateWithInsightsSchema.parse(input))
++
++describe('dashboard-create-with-insights', () => {
++    it('creates the dashboard and five tiles in order, arranges them and returns a trimmed receipt', async () => {
++        const fake = new FakePostHog()
++        const receipt = await run(fake, fiveTiles())
++
++        expect(receipt.status).toBe('created')
++        expect(receipt.dashboard).toMatchObject({ name: 'Product overview' })
++        expect(receipt.dashboard!.url).toBe(`http://ph.test/project/42/dashboard/${receipt.dashboard!.id}`)
++        expect(receipt.tiles.map((tile) => tile.name)).toEqual([
++            'Signup errors',
++            'Signup funnel',
++            'Daily signups',
++            'Signup retention',
++            'Signups by browser (SQL)',
++        ])
++        expect(receipt.tiles.every((tile) => 'tile_id' in tile && typeof tile.tile_id === 'number')).toBe(true)
++
++        const reorder = fake.log.find((entry) => entry.path.endsWith('/reorder_tiles/'))
++        expect(reorder?.body).toEqual({
++            tile_order: receipt.tiles.map((tile) => (tile as { tile_id: number }).tile_id),
++            layout: 'two_column',
++        })
++        // Each query ran once before any write, and the tile ids came from the insights: no dashboard re-read.
++        expect(fake.log.filter((entry) => entry.path.endsWith('/query/'))).toHaveLength(5)
++        expect(fake.log.filter((entry) => entry.method === 'GET' && entry.path.includes('/dashboards/'))).toHaveLength(
++            0
++        )
++        const firstWrite = fake.log.findIndex((entry) => entry.method === 'POST' && entry.path.endsWith('/dashboards/'))
++        const lastQuery = fake.log.map((entry) => entry.path.endsWith('/query/')).lastIndexOf(true)
++        expect(lastQuery).toBeLessThan(firstWrite)
++        // The receipt stays small: no query, results or creator objects.
++        expect(JSON.stringify(receipt).length).toBeLessThan(1200)
++    })
++
++    it('runs the source of a visualization node, not the wrapper', async () => {
++        const fake = new FakePostHog()
++        const ran: unknown[] = []
++        fake.runQuery = async (query) => {
++            ran.push(query)
++            return { results: [] }
++        }
++        await run(fake, { name: 'd', tiles: [{ name: 'sql', query: sql }] })
++        expect(ran).toEqual([{ kind: 'HogQLQuery', query: 'SELECT 1' }])
++    })
++
++    it('attaches an existing insight by id or short_id, keeping its other dashboards', async () => {
++        const fake = new FakePostHog()
++        fake.seed('dashboards', { id: 7, name: 'Other' })
++        fake.seed('insights', { id: 81, short_id: 'legacy01', name: 'Legacy funnel', query: funnel })
++        await fake.request({ method: 'PATCH', path: '/api/projects/42/insights/81/', body: { dashboards: [7] } })
++
++        const receipt = await run(fake, fiveTiles(81))
++        expect(receipt.tiles[4]).toMatchObject({ insight_id: 81, source: 'attached', name: 'Legacy funnel' })
++        const insight = await fake.request<{ dashboards: number[] }>({
++            method: 'GET',
++            path: '/api/projects/42/insights/81/',
++        })
++        expect(insight.dashboards.sort()).toEqual([7, receipt.dashboard!.id].sort())
++    })
++
++    it('validates every tile before writing: two bad tiles are both named and nothing is created', async () => {
++        const fake = new FakePostHog()
++        fake.runQuery = async (query) => {
++            if (query.kind === 'HogQLQuery') {
++                throw new PostHogValidationError({
++                    detail: 'Unknown table "evnts"',
++                    attr: undefined,
++                    code: undefined,
++                    extra: undefined,
++                    url: '',
++                    method: 'POST',
++                })
++            }
++            return { results: [] }
++        }
++        const input = fiveTiles()
++        input.tiles[1] = { name: 'Broken', query: { kind: 'NotAQuery' } as never }
++        const error = await run(fake, input).then(
++            () => new Error('expected a failure'),
++            (e: unknown) => e as Error
++        )
++        expect(error).toBeInstanceOf(ToolInputValidationError)
++        expect((error as Error).message).toMatch(/Nothing was created: 2 of 5 tile\(s\) failed validation/)
++        expect((error as Error).message).toMatch(/tile 1 \(Broken\): query.kind/)
++        expect((error as Error).message).toMatch(/tile 4 \(Signups by browser \(SQL\)\): .*Unknown table/)
++        expect(fake.writes()).toHaveLength(0)
++    })
++
++    it('refuses a missing existing insight and a duplicate one before writing', async () => {
++        const fake = new FakePostHog()
++        fake.seed('insights', { id: 81, short_id: 'legacy01', name: 'Legacy', query: funnel })
++        const error = await run(fake, {
++            name: 'd',
++            tiles: [{ insight_id: 81 }, { insight_id: 'legacy01' }, { insight_id: 404 }],
++        }).then(
++            () => new Error('expected a failure'),
++            (e: unknown) => e as Error
++        )
++        expect(error.message).toMatch(/tile 1: insight 81 is already tile 0/)
++        expect(error.message).toMatch(/tile 2: .*404|Not Found/)
++        expect(fake.writes()).toHaveLength(0)
++    })
++
++    it('rolls back everything it created when a later step fails, and says so', async () => {
++        const fake = new FakePostHog()
++        fake.seed('insights', { id: 81, short_id: 'legacy01', name: 'Legacy', query: funnel })
++        let creates = 0
++        fake.failWhen = (request) => {
++            if (request.method === 'POST' && request.path.endsWith('/insights/') && ++creates === 3) {
++                return new PostHogApiError({
++                    status: 500,
++                    statusText: 'Server Error',
++                    body: '',
++                    url: request.path,
++                    method: 'POST',
++                })
++            }
++            return undefined
++        }
++        const input = { ...fiveTiles(), tiles: [{ insight_id: 81 }, ...fiveTiles().tiles.slice(0, 4)] }
++        const error = await run(fake, input).then(
++            () => new Error('expected a failure'),
++            (e: unknown) => e as Error
++        )
++
++        expect(error).toBeInstanceOf(AtomicWriteError)
++        expect(error.message).toMatch(/failed at step "create tile 3 \(Daily signups\)"/)
++        expect(error.message).toMatch(
++            /Rolled back: insight \d+ soft-deleted; insight \d+ soft-deleted; insight 81 detached from dashboard \d+; dashboard \d+ soft-deleted/
++        )
++        expect(error.message).toMatch(/Nothing from this call remains/)
++        const live = [...fake.collection('insights').values()].filter((insight) => insight.deleted !== true)
++        expect(live.map((insight) => insight.id)).toEqual([81])
++        expect([...fake.collection('dashboards').values()].every((dashboard) => dashboard.deleted === true)).toBe(true)
++        const legacy = await fake.request<{ dashboards: number[] }>({
++            method: 'GET',
++            path: '/api/projects/42/insights/81/',
++        })
++        expect(legacy.dashboards).toEqual([])
++    })
++
++    it('names anything a failed rollback left behind', async () => {
++        const fake = new FakePostHog()
++        fake.failWhen = (request) => {
++            if (request.path.endsWith('/reorder_tiles/')) {
++                return new PostHogApiError({
++                    status: 503,
++                    statusText: 'Unavailable',
++                    body: '',
++                    url: request.path,
++                    method: 'POST',
++                })
++            }
++            if (request.method === 'PATCH' && request.path.includes('/dashboards/')) {
++                return new PostHogApiError({
++                    status: 503,
++                    statusText: 'Unavailable',
++                    body: '',
++                    url: request.path,
++                    method: 'PATCH',
++                })
++            }
++            return undefined
++        }
++        const error = await run(fake, fiveTiles()).then(
++            () => new Error('expected a failure'),
++            (e: unknown) => e as Error
++        )
++        expect(error.message).toMatch(/failed at step "arrange the tiles"/)
++        expect(error.message).toMatch(/ROLLBACK INCOMPLETE.*dashboard \d+ \(could not be soft-deleted/)
++    })
++
++    it('dry_run validates and returns the plan without writing', async () => {
++        const fake = new FakePostHog()
++        const receipt = await run(fake, { ...fiveTiles(), dry_run: true, validate: 'schema' })
++        expect(receipt.status).toBe('dry_run')
++        expect(receipt.tiles).toHaveLength(5)
++        expect(fake.log).toHaveLength(0)
++    })
++})
++
++describe('CompensationLog', () => {
++    it('undoes newest first and keeps going after a failed undo', async () => {
++        const log = new CompensationLog()
++        const order: string[] = []
++        log.record({ target: 'a', action: 'deleted', undo: async () => order.push('a') })
++        log.record({
++            target: 'b',
++            action: 'deleted',
++            undo: async () => {
++                throw new Error('nope')
++            },
++        })
++        log.record({ target: 'c', action: 'deleted', undo: async () => order.push('c') })
++        const report = await log.rollback()
++        expect(order).toEqual(['c', 'a'])
++        expect(report.complete).toBe(false)
++        expect(describeRollback(report)).toMatch(/ROLLBACK INCOMPLETE.*b \(could not be deleted: nope\)/)
++        expect(describeRollback({ entries: [], complete: true })).toMatch(/Nothing had been written yet/)
++    })
++})
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,247 @@
+From 25aef102e5a9e8680593f9a87b960be659efa3eb Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:57:24 -0700
+Subject: [PATCH 10/17] feat(mcp): list only seen events from read-data-schema
+
+On the friction project, 66 of 71 rows of the events listing were
+PostHog's catalogue of known events the project never sent, about 3,000
+tokens around 5 real events (B2).
+
+read-data-schema now leaves out the rows the backend marks "(not seen in
+the last N days)" and reports them as a count with the call that lists
+them: query.include_unseen = true. The option is stripped before the
+request, so the backend helper and its formatting are unchanged; only
+the events kind is filtered.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/tool-inputs.json          |  4 +
+ services/mcp/src/schema/tool-inputs.ts        | 10 +++
+ .../tools/posthogAiTools/readDataSchema.ts    | 61 ++++++++++++-
+ .../unit/read-data-schema-unseen.test.ts      | 85 +++++++++++++++++++
+ 4 files changed, 158 insertions(+), 2 deletions(-)
+ create mode 100644 services/mcp/tests/unit/read-data-schema-unseen.test.ts
+
+diff --git a/services/mcp/schema/tool-inputs.json b/services/mcp/schema/tool-inputs.json
+index 978bfc960c9..cea984da143 100644
+--- a/services/mcp/schema/tool-inputs.json
++++ b/services/mcp/schema/tool-inputs.json
+@@ -1832,6 +1832,10 @@
+                                     "type": "integer",
+                                     "minimum": 0,
+                                     "maximum": 9007199254740991
++                                },
++                                "include_unseen": {
++                                    "description": "Also list events that are defined but were not seen in the last 30 days. By default they are left out and only counted.",
++                                    "type": "boolean"
+                                 }
+                             },
+                             "required": ["kind"],
+diff --git a/services/mcp/src/schema/tool-inputs.ts b/services/mcp/src/schema/tool-inputs.ts
+index cb3f25e0f3f..6bc9bbd917d 100644
+--- a/services/mcp/src/schema/tool-inputs.ts
++++ b/services/mcp/src/schema/tool-inputs.ts
+@@ -1051,6 +1051,12 @@ const ReadEventsQuerySchema = z
+             .optional()
+             .describe('Number of events to return per page.'),
+         offset: z.number().int().min(0).default(0).optional().describe('Number of events to skip for pagination.'),
++        include_unseen: z
++            .boolean()
++            .optional()
++            .describe(
++                'Also list events that are defined but were not seen in the last 30 days. By default they are left out and only counted.'
++            ),
+     })
+     .strict()
+ 
+@@ -1173,6 +1179,9 @@ function normalizeQueryFields(source: Record<string, unknown>): Record<string, u
+             fields[name] = castStringToInt(fields[name])
+         }
+     }
++    if (fields['include_unseen'] === 'true' || fields['include_unseen'] === 'false') {
++        fields['include_unseen'] = fields['include_unseen'] === 'true'
++    }
+     // Clamped rather than refused: the backend returns at most one page of this size anyway, so
+     // a bigger ask is answered instead of costing the caller a round trip.
+     if (typeof fields['limit'] === 'number') {
+@@ -1259,6 +1268,7 @@ function normalizeReadDataSchemaInput(input: unknown): unknown {
+     if (kind !== 'events') {
+         delete fields['limit']
+         delete fields['offset']
++        delete fields['include_unseen']
+     }
+     return { query: { ...fields, kind } }
+ }
+diff --git a/services/mcp/src/tools/posthogAiTools/readDataSchema.ts b/services/mcp/src/tools/posthogAiTools/readDataSchema.ts
+index 407cee9ece1..60549e68c22 100644
+--- a/services/mcp/src/tools/posthogAiTools/readDataSchema.ts
++++ b/services/mcp/src/tools/posthogAiTools/readDataSchema.ts
+@@ -9,15 +9,72 @@ const schema = ReadDataSchemaSchema
+ 
+ type Params = z.infer<typeof schema>
+ 
++/** The marker the backend's events formatter puts on an event defined for the project
++ *  but not seen in its window ("(not seen in the last 30 days)"). */
++const UNSEEN_EVENT_LINE = /^- .*\(not seen in the last (\d+) days?\)\s*$/
++
++/** The backend's footnote explaining the marker, which has nothing to explain once
++ *  the marked rows are gone. */
++const UNSEEN_EVENTS_FOOTNOTE = /^# Events marked \(not seen in the last \d+ days?\)/
++
++/**
++ * Leaves out the events the project has not sent in the window, and says how many there
++ * were and how to list them.
++ *
++ * On a young or narrow project most of the list is PostHog's catalogue of known events
++ * (`$ai_*`, `$conversation_*`, mobile lifecycle) that it never sent: 66 of 71 rows on the
++ * project this was measured on, about 3,000 tokens around 5 real events. The backend
++ * marks those rows, so this is done here rather than in the backend helper, which other
++ * surfaces share. Only a line the backend marked is removed; every other line, the
++ * snapshot note included, passes through unchanged.
++ */
++export function omitUnseenEvents(content: string): string {
++    const lines = content.split('\n')
++    const kept: string[] = []
++    let omitted = 0
++    let windowDays: string | undefined
++    for (const line of lines) {
++        const unseen = UNSEEN_EVENT_LINE.exec(line)
++        if (unseen) {
++            omitted += 1
++            windowDays ??= unseen[1]
++            continue
++        }
++        if (UNSEEN_EVENTS_FOOTNOTE.test(line)) {
++            continue
++        }
++        kept.push(line)
++    }
++    if (omitted === 0) {
++        return content
++    }
++    const note = `# ${omitted} more event${omitted === 1 ? ' is' : 's are'} defined for this project but not seen in the last ${windowDays} days, so they are left out. To list them, call read-data-schema with {"query": {"kind": "events", "include_unseen": true}}.`
++    // After the event rows, before the snapshot footnote, where the backend put its own note.
++    const footnoteAt = kept.findIndex((line) => line.startsWith('# Taxonomy snapshot'))
++    if (footnoteAt === -1) {
++        return `${kept.join('\n').trimEnd()}\n\n${note}`
++    }
++    const before = kept.slice(0, footnoteAt).join('\n').trimEnd()
++    const after = kept.slice(footnoteAt).join('\n')
++    return `${before}\n\n${note}\n\n${after}`
++}
++
+ export const readDataSchemaHandler: ToolBase<typeof schema, string>['handler'] = async (
+     context: Context,
+     params: Params
+ ) => {
++    const query = params.query
++    const includeUnseen = query.kind === 'events' && query.include_unseen === true
++    // `include_unseen` is this server's option, not the backend's.
++    const { include_unseen: _option, ...backendQuery } = query as typeof query & { include_unseen?: boolean }
+     const result = await invokeMcpTool(context, 'read_taxonomy', {
+-        query: params.query,
++        query: backendQuery,
+     })
+ 
+-    return result.content
++    if (query.kind !== 'events' || includeUnseen || typeof result.content !== 'string') {
++        return result.content
++    }
++    return omitUnseenEvents(result.content)
+ }
+ 
+ const tool = (): ToolBase<typeof schema, string> => ({
+diff --git a/services/mcp/tests/unit/read-data-schema-unseen.test.ts b/services/mcp/tests/unit/read-data-schema-unseen.test.ts
+new file mode 100644
+index 00000000000..d532b59d796
+--- /dev/null
++++ b/services/mcp/tests/unit/read-data-schema-unseen.test.ts
+@@ -0,0 +1,85 @@
++import { describe, expect, it, vi } from 'vitest'
++
++import { ReadDataSchemaSchema } from '@/schema/tool-inputs'
++import { omitUnseenEvents, readDataSchemaHandler } from '@/tools/posthogAiTools/readDataSchema'
++import type { Context } from '@/tools/types'
++
++const EVENTS = [
++    'events:',
++    '- `All events` - All events. This is a wildcard that matches all events.',
++    '- `signup_started`',
++    '- `signup_completed`',
++    '- `$ai_embedding` - AI embedding (LLM). A call to an embedding model. (not seen in the last 30 days)',
++    '- `$ai_trace` - AI trace (LLM). A generative AI trace. (not seen in the last 30 days)',
++    '- `Application opened` - Application opened. When a user opens the mobile app. (not seen in the last 30 days)',
++    '',
++    '# Events marked (not seen in the last 30 days) are listed for reference only. This project has sent none of them recently, so never present them as data it is collecting.',
++    '',
++    '# Taxonomy snapshot taken at 2026-11-10T19:45:18Z. Counts cover the last 30 days.',
++].join('\n')
++
++function contextReturning(content: string): { context: Context; request: ReturnType<typeof vi.fn> } {
++    const request = vi.fn(async () => ({ success: true, content }))
++    const context = {
++        api: { request },
++        stateManager: { getProjectId: async () => '1' },
++    } as unknown as Context
++    return { context, request }
++}
++
++describe('read-data-schema events: seen events only', () => {
++    it('leaves out unseen events and says how many there were and how to list them', () => {
++        const out = omitUnseenEvents(EVENTS)
++        expect(out).toContain('- `signup_started`')
++        expect(out).toContain('- `All events`')
++        expect(out).not.toContain('$ai_embedding')
++        expect(out).not.toContain('Events marked (not seen')
++        expect(out).toContain(
++            '# 3 more events are defined for this project but not seen in the last 30 days, so they are left out. To list them, call read-data-schema with {"query": {"kind": "events", "include_unseen": true}}.'
++        )
++        // The snapshot note stays last, where the backend put it.
++        expect(out.trimEnd().split('\n').at(-1)).toMatch(/^# Taxonomy snapshot/)
++    })
++
++    it('returns a list with nothing unseen unchanged', () => {
++        const seenOnly = 'events:\n- `signup_started`\n\n# Taxonomy snapshot taken at now.'
++        expect(omitUnseenEvents(seenOnly)).toBe(seenOnly)
++    })
++
++    it('filters by default and lists everything with include_unseen, without sending the option to the backend', async () => {
++        const { context, request } = contextReturning(EVENTS)
++        const filtered = await readDataSchemaHandler(context, ReadDataSchemaSchema.parse({ query: { kind: 'events' } }))
++        expect(filtered).not.toContain('$ai_trace')
++
++        const all = await readDataSchemaHandler(
++            context,
++            ReadDataSchemaSchema.parse({ query: { kind: 'events', include_unseen: true } })
++        )
++        expect(all).toBe(EVENTS)
++        for (const call of request.mock.calls as unknown as [
++            { body: { args: { query: Record<string, unknown> } } },
++        ][]) {
++            expect(call[0].body.args.query).not.toHaveProperty('include_unseen')
++        }
++    })
++
++    it('accepts include_unseen as a string and drops it from other kinds', () => {
++        expect(ReadDataSchemaSchema.parse({ query: { kind: 'events', include_unseen: 'true' } })).toEqual({
++            query: { kind: 'events', include_unseen: true, limit: 500, offset: 0 },
++        })
++        expect(
++            ReadDataSchemaSchema.parse({ query: { kind: 'event_properties', event_name: 'x', include_unseen: true } })
++        ).toEqual({ query: { kind: 'event_properties', event_name: 'x' } })
++    })
++
++    it('passes other kinds through untouched', async () => {
++        const text = '- `plan` (not seen in the last 30 days)'
++        const { context } = contextReturning(text)
++        await expect(
++            readDataSchemaHandler(
++                context,
++                ReadDataSchemaSchema.parse({ query: { kind: 'event_properties', event_name: 'x' } })
++            )
++        ).resolves.toBe(text)
++    })
++})
+-- 
+2.50.1 (Apple Git-155)
+

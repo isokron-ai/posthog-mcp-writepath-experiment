@@ -1,0 +1,2260 @@
+From cda63ff2a20ce05538ef93d63beddc86b5e5450f Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:39:03 -0700
+Subject: [PATCH 01/17] feat(mcp): return short receipts from writes and
+ deletes
+
+Insight, dashboard, annotation, survey, cohort and action writes echoed
+the whole object: every tile's query, compiled HogQL, cached results and
+two full user objects. On the friction session 73 writes and deletes
+returned 61,363 tokens, of which 4,187 were needed.
+
+A tool with `response.receipt` in tools.yaml now returns its identity
+fields (id, short_id, key, name, version when present), the extra fields
+it lists, the soft-delete field it set, and `_posthogUrl`. An update
+(PATCH or PUT with a body) also reads the object first and lists each
+sent field it changed as `changed.<path>: {from, to}` (by index inside
+same-length arrays) and each it left alone under `unchanged`. The read
+is display-only: the write is the same request as before, so no new
+lost-update window opens; `from` can be stale if someone else edits the
+object between the read and the write. A failed read falls back to the
+stored values. Codegen adds an optional `full` param on these tools that
+returns the old response with include/exclude applied.
+
+Receipts are declared on insight-create/update/delete,
+dashboard-create/delete/reorder-tiles (tile ids, order and layouts),
+annotation-create/annotations-partial-update/annotation-delete,
+survey-create/update/delete, cohorts-create/partial-update and
+action-create/update/delete.
+
+The text the model reads also shrinks every created_by,
+last_modified_by and updated_by user object to {id, name}, in
+formatResponse; JSON output and the structured payload keep the full
+object.
+
+The generated handlers are edited to match what the generator now
+emits, because codegen needs the backend OpenAPI schema.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ products/actions/mcp/tools.yaml               |   6 +
+ products/annotations/mcp/tools.yaml           |  15 +
+ products/cohorts/mcp/tools.yaml               |   7 +
+ products/dashboards/mcp/tools.yaml            |  17 +
+ products/product_analytics/mcp/tools.yaml     |  12 +
+ products/surveys/mcp/tools.yaml               |  12 +
+ services/mcp/scripts/generate-tools.ts        |  86 +++-
+ services/mcp/scripts/yaml-config-schema.ts    |  31 ++
+ services/mcp/src/lib/response.ts              |   5 +-
+ services/mcp/src/lib/user-refs.ts             |  51 +++
+ services/mcp/src/tools/generated/actions.ts   |  56 ++-
+ .../mcp/src/tools/generated/annotations.ts    |  60 ++-
+ services/mcp/src/tools/generated/cohorts.ts   |  42 +-
+ .../mcp/src/tools/generated/dashboards.ts     | 196 +++++----
+ .../src/tools/generated/product_analytics.ts  | 105 +++--
+ services/mcp/src/tools/generated/surveys.ts   | 119 ++++--
+ services/mcp/src/tools/tool-utils.ts          | 146 +++++++
+ .../tool-schemas/action-create.json           |   4 +
+ .../tool-schemas/action-delete.json           |   4 +
+ .../tool-schemas/action-update.json           |   4 +
+ .../tool-schemas/annotation-create.json       |   4 +
+ .../tool-schemas/annotation-delete.json       |   4 +
+ .../annotations-partial-update.json           |   4 +
+ .../tool-schemas/cohorts-create.json          |   4 +
+ .../tool-schemas/cohorts-partial-update.json  |   4 +
+ .../tool-schemas/dashboard-create.json        |   4 +
+ .../tool-schemas/dashboard-delete.json        |   4 +
+ .../tool-schemas/dashboard-reorder-tiles.json |   4 +
+ .../tool-schemas/insight-create.json          |   4 +
+ .../tool-schemas/insight-delete.json          |   4 +
+ .../tool-schemas/insight-update.json          |   4 +
+ .../tool-schemas/survey-create.json           |   4 +
+ .../tool-schemas/survey-delete.json           |   4 +
+ .../tool-schemas/survey-update.json           |   4 +
+ .../mcp/tests/unit/write-receipts.test.ts     | 376 ++++++++++++++++++
+ 35 files changed, 1239 insertions(+), 171 deletions(-)
+ create mode 100644 services/mcp/src/lib/user-refs.ts
+ create mode 100644 services/mcp/tests/unit/write-receipts.test.ts
+
+diff --git a/products/actions/mcp/tools.yaml b/products/actions/mcp/tools.yaml
+index 815d31f46f7..5306865aadb 100644
+--- a/products/actions/mcp/tools.yaml
++++ b/products/actions/mcp/tools.yaml
+@@ -39,6 +39,8 @@ tools:
+             name:
+                 description: Name of the action (must be unique within the project)
+         ui_app: action
++        response:
++            receipt: true
+     action-delete:
+         operation: actions_destroy
+         enabled: true
+@@ -53,6 +55,8 @@ tools:
+             Delete an action by ID (soft delete - marks as deleted). The action will no longer appear in lists but
+             historical data is preserved.
+         soft_delete: true
++        response:
++            receipt: true
+     action-get:
+         operation: actions_retrieve
+         enabled: true
+@@ -91,6 +95,8 @@ tools:
+             - creation_context
+             - last_calculated_at
+         ui_app: action
++        response:
++            receipt: true
+     actions-get-all:
+         operation: actions_list
+         enabled: true
+diff --git a/products/annotations/mcp/tools.yaml b/products/annotations/mcp/tools.yaml
+index 052a13b9928..dd35ae6d877 100644
+--- a/products/annotations/mcp/tools.yaml
++++ b/products/annotations/mcp/tools.yaml
+@@ -32,6 +32,12 @@ tools:
+             - dashboard_id
+             - emoji
+             - hidden_in_user_interface
++        response:
++            receipt:
++                fields:
++                    - content
++                    - date_marker
++                    - scope
+     annotation-delete:
+         operation: annotations_destroy
+         enabled: true
+@@ -46,6 +52,11 @@ tools:
+             Soft-delete an annotation by ID. This hides the annotation from normal lists while preserving historical
+             records.
+         soft_delete: true
++        response:
++            receipt:
++                fields:
++                    - content
++                    - date_marker
+     annotation-retrieve:
+         operation: annotations_retrieve
+         enabled: true
+@@ -114,6 +125,10 @@ tools:
+             - dashboard_id
+             - emoji
+             - hidden_in_user_interface
++        response:
++            receipt:
++                fields:
++                    - content
+     change-feed-list:
+         operation: change_feed_list
+         enabled: true
+diff --git a/products/cohorts/mcp/tools.yaml b/products/cohorts/mcp/tools.yaml
+index 4bde7bce7ef..b5d6b6c63e8 100644
+--- a/products/cohorts/mcp/tools.yaml
++++ b/products/cohorts/mcp/tools.yaml
+@@ -96,6 +96,11 @@ tools:
+             - count
+             - experiment_set
+         ui_app: cohort
++        response:
++            receipt:
++                fields:
++                    - is_static
++                    - is_calculating
+     cohorts-list:
+         operation: cohorts_list
+         enabled: true
+@@ -180,6 +185,8 @@ tools:
+             id:
+                 cast: string-int
+         ui_app: cohort
++        response:
++            receipt: true
+     cohorts-retrieve:
+         operation: cohorts_retrieve
+         enabled: true
+diff --git a/products/dashboards/mcp/tools.yaml b/products/dashboards/mcp/tools.yaml
+index e6a9bb0daea..21c0db026bb 100644
+--- a/products/dashboards/mcp/tools.yaml
++++ b/products/dashboards/mcp/tools.yaml
+@@ -63,6 +63,11 @@ tools:
+             - _create_in_folder
+             - group_titles
+         response:
++            receipt:
++                fields:
++                    - tiles.*.id
++                    - tiles.*.insight.short_id
++                    - tiles.*.insight.name
+             exclude:
+                 - user_access_level
+                 - creation_mode
+@@ -174,6 +179,8 @@ tools:
+             id:
+                 cast: string-int
+         soft_delete: true
++        response:
++            receipt: true
+     dashboard-delete-tile:
+         operation: dashboards_delete_tile
+         enabled: true
+@@ -350,6 +357,16 @@ tools:
+             can overlap the repacked tiles. This tool does not set different sizes or positions for individual tiles.
+             After substantial visual changes, check the final saved dashboard once if browser access is already
+             available. Skip browser checks for small edits.
++        response:
++            receipt:
++                fields:
++                    - tiles.*.id
++                    - tiles.*.order
++                    - tiles.*.layouts
++                    - tiles.*.insight.id
++                    - tiles.*.insight.short_id
++                    - tiles.*.insight.name
++                    - tiles.*.text.body
+     dashboard-templates-list:
+         operation: dashboard_templates_list
+         enabled: true
+diff --git a/products/product_analytics/mcp/tools.yaml b/products/product_analytics/mcp/tools.yaml
+index 37f8382b248..ead31cfec7a 100644
+--- a/products/product_analytics/mcp/tools.yaml
++++ b/products/product_analytics/mcp/tools.yaml
+@@ -268,6 +268,11 @@ tools:
+                 description: |
+                     Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.
+         response:
++            receipt:
++                fields:
++                    - dashboards
++                    - dashboard_tiles.*.id
++                    - dashboard_tiles.*.dashboard_id
+             exclude:
+                 - result
+                 - hasMore
+@@ -296,6 +301,8 @@ tools:
+                     - short_id
+                     - shortId
+         soft_delete: true
++        response:
++            receipt: true
+     insight-get:
+         operation: insights_retrieve
+         enabled: true
+@@ -391,6 +398,11 @@ tools:
+                 description: |
+                     Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.
+         response:
++            receipt:
++                fields:
++                    - dashboards
++                    - dashboard_tiles.*.id
++                    - dashboard_tiles.*.dashboard_id
+             exclude:
+                 - result
+                 - hasMore
+diff --git a/products/surveys/mcp/tools.yaml b/products/surveys/mcp/tools.yaml
+index abf3f35fb8a..6598d4990d3 100644
+--- a/products/surveys/mcp/tools.yaml
++++ b/products/surveys/mcp/tools.yaml
+@@ -129,6 +129,14 @@ tools:
+                     Optional hosted-form content configuration for external_survey forms. Only include this when the
+                     user explicitly asks to customize the hosted form content beyond the standard question flow.
+         ui_app: survey
++        response:
++            receipt:
++                fields:
++                    - type
++                    - start_date
++                    - questions.*.id
++                    - questions.*.type
++                    - questions.*.question
+     survey-delete:
+         operation: surveys_destroy
+         enabled: true
+@@ -147,6 +155,8 @@ tools:
+                     - survey_id
+                     - surveyId
+         soft_delete: archived
++        response:
++            receipt: true
+     survey-get:
+         operation: surveys_retrieve
+         enabled: true
+@@ -329,6 +339,8 @@ tools:
+                     Hosted-form content configuration for external_survey forms. Do not provide this field unless
+                     editing hosted-form content. Preserve existing content fields that should remain.
+         ui_app: survey
++        response:
++            receipt: true
+     surveys-get-all:
+         operation: surveys_list
+         enabled: true
+diff --git a/services/mcp/scripts/generate-tools.ts b/services/mcp/scripts/generate-tools.ts
+index 066477ebdc2..dfcda4b9d25 100644
+--- a/services/mcp/scripts/generate-tools.ts
++++ b/services/mcp/scripts/generate-tools.ts
+@@ -934,9 +934,54 @@ function buildPathExpr(
+ // Response filtering templates
+ // ------------------------------------------------------------------
+ 
+-type ResponseFilterHelper = 'pickResponseFields' | 'omitResponseFields' | 'stripNullFields'
++type ResponseFilterHelper =
++    | 'pickResponseFields'
++    | 'omitResponseFields'
++    | 'stripNullFields'
++    | 'buildWriteReceipt'
++    | 'readReceiptPreImage'
++
++/** How a tool with `response.receipt` builds its receipt, resolved from the YAML and the operation. */
++interface ReceiptPlan {
++    /** Extra fields kept beyond the identity fields, the soft-delete field included. */
++    fields: string[]
++    /** Read the object before the write and diff the sent fields against it. */
++    diff: boolean
++    /** Pass the request body so the receipt knows which fields were sent. */
++    hasBody: boolean
++}
++
++const RECEIPT_FULL_PARAM_DESCRIPTION =
++    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++
++/**
++ * Resolves `response.receipt` for one tool. The diff (and the read it needs) applies to updates
++ * only: a PATCH or PUT that sends a body. Creates and actions keep the identity fields and any
++ * listed `fields`; a soft delete also keeps the field it set.
++ */
++function resolveReceiptPlan(
++    config: ToolConfig,
++    httpMethod: string,
++    hasBody: boolean,
++    softDeleteField: string | undefined
++): ReceiptPlan | undefined {
++    const receipt = config.response?.receipt
++    if (!receipt) {
++        return undefined
++    }
++    const options = receipt === true ? {} : receipt
++    const fields = [...(options.fields ?? [])]
++    if (softDeleteField && !fields.includes(softDeleteField)) {
++        fields.push(softDeleteField)
++    }
++    const isUpdate = (httpMethod === 'PATCH' || httpMethod === 'PUT') && hasBody && !softDeleteField
++    return { fields, diff: isUpdate && options.diff !== false, hasBody: isUpdate }
++}
+ 
+-function buildResponseFilter(config: ToolConfig): {
++function buildResponseFilter(
++    config: ToolConfig,
++    receipt?: ReceiptPlan
++): {
+     code: string
+     helperImports: ResponseFilterHelper[]
+ } {
+@@ -974,6 +1019,24 @@ function buildResponseFilter(config: ToolConfig): {
+         shapeItem = (target) => `stripNullFields(${inner(target)})`
+     }
+ 
++    if (receipt) {
++        // `full: true` keeps the old response, shaped by include/exclude as before.
++        const fullShape = shapeItem('result')
++        const receiptOptions = [
++            `fields: [${receipt.fields.map((f) => `'${f}'`).join(', ')}]`,
++            ...(receipt.hasBody ? ['sent: body'] : []),
++            ...(receipt.diff ? ['before'] : []),
++        ].join(', ')
++        helperImports.push('buildWriteReceipt')
++        if (receipt.diff) {
++            helperImports.push('readReceiptPreImage')
++        }
++        return {
++            code: `        const filtered = (params.full ? ${fullShape} : buildWriteReceipt(result, { ${receiptOptions} })) as typeof result\n`,
++            helperImports,
++        }
++    }
++
+     if (helperImports.length === 0) {
+         return { code: '', helperImports: [] }
+     }
+@@ -1191,6 +1254,12 @@ function generateToolCode(
+     if (expandableExtension) {
+         schemaExpr = `${schemaExpr}${expandableExtension}`
+     }
++    const receiptExtension = config.response?.receipt
++        ? `.extend({ full: z.boolean().optional().describe(${JSON.stringify(RECEIPT_FULL_PARAM_DESCRIPTION)}) })`
++        : ''
++    if (receiptExtension) {
++        schemaExpr = `${schemaExpr}${receiptExtension}`
++    }
+     if (config.validators && config.validators.length > 0) {
+         for (const fn of config.validators) {
+             schemaExpr = `(${schemaExpr}).superRefine(${fn})`
+@@ -1280,6 +1349,11 @@ function generateToolCode(
+     const transformsBody = hasBody && !!config.hooks
+ 
+     const httpMethod = handlerHttpMethod(config, resolved)
++    const receiptPlan = resolveReceiptPlan(config, httpMethod, hasBody, isSoftDelete ? softDeleteField : undefined)
++    if (receiptPlan?.diff) {
++        // Read before the write, for the receipt's `from` values only; the write is unchanged.
++        handlerBody += `        const before = params.full ? undefined : await readReceiptPreImage(context, ${pathExpr})\n`
++    }
+     handlerBody += `        const result = await context.api.request<${responseType ?? 'unknown'}>({\n`
+     handlerBody += `            method: '${httpMethod}',\n`
+     handlerBody += `            path: ${pathExpr},\n`
+@@ -1309,8 +1383,8 @@ function generateToolCode(
+     }
+     handlerBody += `        })\n`
+ 
+-    // Response filtering — pick/omit fields before enrichment
+-    const responseFilter = buildResponseFilter(config)
++    // Response filtering — pick/omit fields (or build the write receipt) before enrichment
++    const responseFilter = buildResponseFilter(config, receiptPlan)
+     if (responseFilter.code) {
+         // Warn if filtering might break enrich_url — only for response-sourced fields;
+         // '{params.x}' fields are read from the request params, so filtering can't break them.
+@@ -1373,7 +1447,8 @@ function generateToolCode(
+         composition.pathParamNames.length > 0 ||
+         enrichUsesParams ||
+         !!selectableExtension ||
+-        !!expandableExtension
++        !!expandableExtension ||
++        !!receiptExtension
+     const paramsName = paramsUsed ? 'params' : '_params'
+ 
+     // When `confirmed_action` is declared, emit TWO factories instead of
+@@ -2696,6 +2771,7 @@ ${spreads}
+ // Export for testing
+ export {
+     buildResponseFilter,
++    resolveReceiptPlan,
+     composeToolSchema,
+     extractPathParams,
+     generateCategoryFile,
+diff --git a/services/mcp/scripts/yaml-config-schema.ts b/services/mcp/scripts/yaml-config-schema.ts
+index db73c19b6bd..d1600f06f09 100644
+--- a/services/mcp/scripts/yaml-config-schema.ts
++++ b/services/mcp/scripts/yaml-config-schema.ts
+@@ -259,6 +259,25 @@ export const ToolConfigSchema = z
+                  * for JSON output.
+                  */
+                 text_include: z.array(z.string()).optional(),
++                /**
++                 * Return a short write receipt instead of the whole object: `id`, `short_id`, `key`, `name`
++                 * and `version` when present, the extra `fields` listed here, the soft-delete field on a
++                 * soft-delete tool, and `_posthogUrl`. An update (PATCH/PUT with a body) also reads the
++                 * object first and lists each sent field it changed as `{from, to}` and each it left alone
++                 * under `unchanged`; set `diff: false` to skip that read. Codegen adds an optional `full`
++                 * request param that returns the old response, with `include`/`exclude` applied as before.
++                 */
++                receipt: z
++                    .union([
++                        z.literal(true),
++                        z
++                            .object({
++                                fields: z.array(z.string()).optional(),
++                                diff: z.boolean().optional(),
++                            })
++                            .strict(),
++                    ])
++                    .optional(),
+                 /** Wrap user-authored response data in an explicit informational-only tag boundary. */
+                 informational_wrapper: z
+                     .object({
+@@ -286,6 +305,10 @@ export const ToolConfigSchema = z
+                 message:
+                     'response.text_include and response.informational_wrapper both own the text channel — pick one',
+             })
++            .refine((data) => !(data.receipt && (data.selectable || data.expandable?.length)), {
++                message:
++                    'response.receipt replaces the default response, so `fields`/`expand` would only apply with `full` — use one or the other',
++            })
+             .optional(),
+         /**
+          * Opt the tool into the typed-confirm two-tool paradigm. Codegen
+@@ -359,6 +382,14 @@ export const ToolConfigSchema = z
+             '`response.strip_nulls` cannot be combined with `list: true` — rows encode as a TOON table, and per-item null removal makes a ragged table larger. Use `response.exclude` to drop the fields instead.',
+         path: ['response', 'strip_nulls'],
+     })
++    .refine((data) => !(data.response?.receipt && data.list), {
++        message: '`response.receipt` describes one written object, so it cannot be combined with `list: true`.',
++        path: ['response', 'receipt'],
++    })
++    .refine((data) => !(data.response?.receipt && data.input_schema), {
++        message: '`response.receipt` is not supported on `input_schema` tools yet.',
++        path: ['response', 'receipt'],
++    })
+     // confirmed_action emits two factories (`-prepare`, `-execute`) via a
+     // codegen path that doesn't currently wrap either with `withUiApp`.
+     // Reject the combination at YAML time rather than silently drop the
+diff --git a/services/mcp/src/lib/response.ts b/services/mcp/src/lib/response.ts
+index 5d2e706e87c..08bbe1100aa 100644
+--- a/services/mcp/src/lib/response.ts
++++ b/services/mcp/src/lib/response.ts
+@@ -1,5 +1,7 @@
+ import { encode } from '@toon-format/toon'
+ 
++import { trimUserRefs } from '@/lib/user-refs'
++
+ const QUERY_PLACEHOLDER_PREFIX = '__QUERY_PLACEHOLDER_'
+ const QUERY_PLACEHOLDER_PATTERN = /__QUERY_PLACEHOLDER_\d+__/g
+ 
+@@ -51,7 +53,8 @@ export function formatResponse(data: any): string {
+     }
+ 
+     const placeholderMap = new Map<string, string>()
+-    const processed = preprocessKeys(unwrapPaginatedResponse(data), placeholderMap)
++    // Creators and modifiers shrink to `{id, name}` in the text the model reads (see trimUserRefs).
++    const processed = preprocessKeys(trimUserRefs(unwrapPaginatedResponse(data)), placeholderMap)
+     const result = encode(processed)
+ 
+     // Use a replacer function so `$&`, `$'` and similar sequences in query JSON stay literal.
+diff --git a/services/mcp/src/lib/user-refs.ts b/services/mcp/src/lib/user-refs.ts
+new file mode 100644
+index 00000000000..ba1b8a56904
+--- /dev/null
++++ b/services/mcp/src/lib/user-refs.ts
+@@ -0,0 +1,51 @@
++/**
++ * Keys under which PostHog serializers embed the acting user as a full `UserBasic` object (id,
++ * uuid, distinct_id, first and last name, email, verification flag, hedgehog config, role).
++ */
++export const USER_REF_KEYS = new Set(['created_by', 'last_modified_by', 'updated_by'])
++
++const USER_BASIC_MARKERS = ['uuid', 'distinct_id', 'email', 'first_name'] as const
++
++function isUserBasic(value: unknown): value is Record<string, unknown> {
++    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
++        return false
++    }
++    const record = value as Record<string, unknown>
++    return 'id' in record && USER_BASIC_MARKERS.some((key) => key in record)
++}
++
++/** `{id, name}` for a `UserBasic`, the name being the person's full name, or their email without one. */
++export function shrinkUserRef(user: Record<string, unknown>): { id: unknown; name: string } {
++    const fullName = [user.first_name, user.last_name]
++        .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
++        .join(' ')
++        .trim()
++    const email = typeof user.email === 'string' ? user.email : ''
++    return { id: user.id, name: fullName || email }
++}
++
++/**
++ * Replaces every embedded creator or modifier with `{id, name}`, at any depth. Over the friction
++ * session these objects were 18,226 of the 61,363 tokens write echoes returned, and no task read
++ * more of them than who the person was. The input is not modified.
++ *
++ * Applied to the model-facing text only: JSON output and the structured payload UI apps read keep
++ * the full objects.
++ */
++export function trimUserRefs<T>(value: T): T {
++    return trim(value) as T
++}
++
++function trim(value: unknown): unknown {
++    if (Array.isArray(value)) {
++        return value.map(trim)
++    }
++    if (value === null || typeof value !== 'object') {
++        return value
++    }
++    const result: Record<string, unknown> = {}
++    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
++        result[key] = USER_REF_KEYS.has(key) && isUserBasic(item) ? shrinkUserRef(item) : trim(item)
++    }
++    return result
++}
+diff --git a/services/mcp/src/tools/generated/actions.ts b/services/mcp/src/tools/generated/actions.ts
+index 289f357fd4b..abfd008df85 100644
+--- a/services/mcp/src/tools/generated/actions.ts
++++ b/services/mcp/src/tools/generated/actions.ts
+@@ -5,14 +5,23 @@ import type { Schemas } from '@/api/generated'
+ import * as orvalSchemas from '@/generated/actions/api'
+ import { withUiApp } from '@/resources/ui-apps'
+ import { castStringToInt } from '@/tools/cast-helpers'
+-import { withPostHogUrl, type WithPostHogUrl } from '@/tools/tool-utils'
++import { withPostHogUrl, buildWriteReceipt, readReceiptPreImage, type WithPostHogUrl } from '@/tools/tool-utils'
+ import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
+ 
+ const ActionCreateSchema = () => {
+     const ActionsCreateBody = orvalSchemas.ActionsCreateBody()
+-    return ActionsCreateBody.omit({ _create_in_folder: true }).extend({
+-        name: ActionsCreateBody.shape['name'].describe('Name of the action (must be unique within the project)'),
+-    })
++    return ActionsCreateBody.omit({ _create_in_folder: true })
++        .extend({
++            name: ActionsCreateBody.shape['name'].describe('Name of the action (must be unique within the project)'),
++        })
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const actionCreate = (): ToolBase<ReturnType<typeof ActionCreateSchema>, WithPostHogUrl<Schemas.Action>> =>
+@@ -48,13 +57,21 @@ const actionCreate = (): ToolBase<ReturnType<typeof ActionCreateSchema>, WithPos
+                 path: `/api/projects/${encodeURIComponent(String(projectId))}/actions/`,
+                 body,
+             })
+-            return await withPostHogUrl(context, result, `/data-management/actions/${result.id}`)
++            const filtered = (params.full ? result : buildWriteReceipt(result, { fields: [] })) as typeof result
++            return await withPostHogUrl(context, filtered, `/data-management/actions/${filtered.id}`)
+         },
+     })
+ 
+ const ActionDeleteSchema = () => {
+     const ActionsDestroyParams = orvalSchemas.ActionsDestroyParams()
+-    return ActionsDestroyParams.omit({ project_id: true })
++    return ActionsDestroyParams.omit({ project_id: true }).extend({
++        full: z
++            .boolean()
++            .optional()
++            .describe(
++                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++            ),
++    })
+ }
+ 
+ const actionDelete = (): ToolBase<ReturnType<typeof ActionDeleteSchema>, Schemas.Action> => ({
+@@ -67,7 +84,8 @@ const actionDelete = (): ToolBase<ReturnType<typeof ActionDeleteSchema>, Schemas
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/actions/${encodeURIComponent(String(params.id))}/`,
+             body: { deleted: true },
+         })
+-        return result
++        const filtered = (params.full ? result : buildWriteReceipt(result, { fields: ['deleted'] })) as typeof result
++        return filtered
+     },
+ })
+ 
+@@ -95,9 +113,16 @@ const actionGet = (): ToolBase<ReturnType<typeof ActionGetSchema>, WithPostHogUr
+ const ActionUpdateSchema = () => {
+     const ActionsPartialUpdateBody = orvalSchemas.ActionsPartialUpdateBody()
+     const ActionsPartialUpdateParams = orvalSchemas.ActionsPartialUpdateParams()
+-    return ActionsPartialUpdateParams.omit({ project_id: true }).extend(
+-        ActionsPartialUpdateBody.omit({ _create_in_folder: true }).shape
+-    )
++    return ActionsPartialUpdateParams.omit({ project_id: true })
++        .extend(ActionsPartialUpdateBody.omit({ _create_in_folder: true }).shape)
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const actionUpdate = (): ToolBase<ReturnType<typeof ActionUpdateSchema>, WithPostHogUrl<Schemas.Action>> =>
+@@ -128,12 +153,21 @@ const actionUpdate = (): ToolBase<ReturnType<typeof ActionUpdateSchema>, WithPos
+             if (params.pinned_at !== undefined) {
+                 body['pinned_at'] = params.pinned_at
+             }
++            const before = params.full
++                ? undefined
++                : await readReceiptPreImage(
++                      context,
++                      `/api/projects/${encodeURIComponent(String(projectId))}/actions/${encodeURIComponent(String(params.id))}/`
++                  )
+             const result = await context.api.request<Schemas.Action>({
+                 method: 'PATCH',
+                 path: `/api/projects/${encodeURIComponent(String(projectId))}/actions/${encodeURIComponent(String(params.id))}/`,
+                 body,
+             })
+-            return await withPostHogUrl(context, result, `/data-management/actions/${result.id}`)
++            const filtered = (
++                params.full ? result : buildWriteReceipt(result, { fields: [], sent: body, before })
++            ) as typeof result
++            return await withPostHogUrl(context, filtered, `/data-management/actions/${filtered.id}`)
+         },
+     })
+ 
+diff --git a/services/mcp/src/tools/generated/annotations.ts b/services/mcp/src/tools/generated/annotations.ts
+index d879d26033f..4d1c8ed94cc 100644
+--- a/services/mcp/src/tools/generated/annotations.ts
++++ b/services/mcp/src/tools/generated/annotations.ts
+@@ -4,12 +4,25 @@ import { z } from 'zod'
+ import type { Schemas } from '@/api/generated'
+ import * as orvalSchemas from '@/generated/annotations/api'
+ import { castStringToInt } from '@/tools/cast-helpers'
+-import { withPostHogUrl, omitResponseFields, type WithPostHogUrl } from '@/tools/tool-utils'
++import {
++    withPostHogUrl,
++    buildWriteReceipt,
++    omitResponseFields,
++    readReceiptPreImage,
++    type WithPostHogUrl,
++} from '@/tools/tool-utils'
+ import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
+ 
+ const AnnotationCreateSchema = () => {
+     const AnnotationsCreateBody = orvalSchemas.AnnotationsCreateBody()
+-    return AnnotationsCreateBody.omit({ creation_type: true, deleted: true })
++    return AnnotationsCreateBody.omit({ creation_type: true, deleted: true }).extend({
++        full: z
++            .boolean()
++            .optional()
++            .describe(
++                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++            ),
++    })
+ }
+ 
+ const annotationCreate = (): ToolBase<ReturnType<typeof AnnotationCreateSchema>, Schemas.Annotation> => ({
+@@ -44,13 +57,23 @@ const annotationCreate = (): ToolBase<ReturnType<typeof AnnotationCreateSchema>,
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/annotations/`,
+             body,
+         })
+-        return result
++        const filtered = (
++            params.full ? result : buildWriteReceipt(result, { fields: ['content', 'date_marker', 'scope'] })
++        ) as typeof result
++        return filtered
+     },
+ })
+ 
+ const AnnotationDeleteSchema = () => {
+     const AnnotationsDestroyParams = orvalSchemas.AnnotationsDestroyParams()
+-    return AnnotationsDestroyParams.omit({ project_id: true })
++    return AnnotationsDestroyParams.omit({ project_id: true }).extend({
++        full: z
++            .boolean()
++            .optional()
++            .describe(
++                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++            ),
++    })
+ }
+ 
+ const annotationDelete = (): ToolBase<ReturnType<typeof AnnotationDeleteSchema>, Schemas.Annotation> => ({
+@@ -63,7 +86,10 @@ const annotationDelete = (): ToolBase<ReturnType<typeof AnnotationDeleteSchema>,
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/annotations/${encodeURIComponent(String(params.id))}/`,
+             body: { deleted: true },
+         })
+-        return result
++        const filtered = (
++            params.full ? result : buildWriteReceipt(result, { fields: ['content', 'date_marker', 'deleted'] })
++        ) as typeof result
++        return filtered
+     },
+ })
+ 
+@@ -135,9 +161,16 @@ const annotationsList = (): ToolBase<
+ const AnnotationsPartialUpdateSchema = () => {
+     const AnnotationsPartialUpdateBody = orvalSchemas.AnnotationsPartialUpdateBody()
+     const AnnotationsPartialUpdateParams = orvalSchemas.AnnotationsPartialUpdateParams()
+-    return AnnotationsPartialUpdateParams.omit({ project_id: true }).extend(
+-        AnnotationsPartialUpdateBody.omit({ creation_type: true, deleted: true }).shape
+-    )
++    return AnnotationsPartialUpdateParams.omit({ project_id: true })
++        .extend(AnnotationsPartialUpdateBody.omit({ creation_type: true, deleted: true }).shape)
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const annotationsPartialUpdate = (): ToolBase<
+@@ -170,12 +203,21 @@ const annotationsPartialUpdate = (): ToolBase<
+         if (params.hidden_in_user_interface !== undefined) {
+             body['hidden_in_user_interface'] = params.hidden_in_user_interface
+         }
++        const before = params.full
++            ? undefined
++            : await readReceiptPreImage(
++                  context,
++                  `/api/projects/${encodeURIComponent(String(projectId))}/annotations/${encodeURIComponent(String(params.id))}/`
++              )
+         const result = await context.api.request<Schemas.Annotation>({
+             method: 'PATCH',
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/annotations/${encodeURIComponent(String(params.id))}/`,
+             body,
+         })
+-        return result
++        const filtered = (
++            params.full ? result : buildWriteReceipt(result, { fields: ['content'], sent: body, before })
++        ) as typeof result
++        return filtered
+     },
+ })
+ 
+diff --git a/services/mcp/src/tools/generated/cohorts.ts b/services/mcp/src/tools/generated/cohorts.ts
+index 7cda351ec00..de370e25e7d 100644
+--- a/services/mcp/src/tools/generated/cohorts.ts
++++ b/services/mcp/src/tools/generated/cohorts.ts
+@@ -5,7 +5,14 @@ import type { Schemas } from '@/api/generated'
+ import * as orvalSchemas from '@/generated/cohorts/api'
+ import { withUiApp } from '@/resources/ui-apps'
+ import { castStringToInt } from '@/tools/cast-helpers'
+-import { withPostHogUrl, pickResponseFields, omitResponseFields, type WithPostHogUrl } from '@/tools/tool-utils'
++import {
++    withPostHogUrl,
++    buildWriteReceipt,
++    pickResponseFields,
++    readReceiptPreImage,
++    omitResponseFields,
++    type WithPostHogUrl,
++} from '@/tools/tool-utils'
+ import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
+ 
+ const CohortsAddPersonsToStaticCohortPartialUpdateSchema = () => {
+@@ -44,7 +51,14 @@ const cohortsAddPersonsToStaticCohortPartialUpdate = (): ToolBase<
+ 
+ const CohortsCreateSchema = () => {
+     const CohortsCreateBody = orvalSchemas.CohortsCreateBody()
+-    return CohortsCreateBody.omit({ _create_in_folder: true, _create_static_person_ids: true })
++    return CohortsCreateBody.omit({ _create_in_folder: true, _create_static_person_ids: true }).extend({
++        full: z
++            .boolean()
++            .optional()
++            .describe(
++                'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++            ),
++    })
+ }
+ 
+ const cohortsCreate = (): ToolBase<ReturnType<typeof CohortsCreateSchema>, WithPostHogUrl<Schemas.Cohort>> =>
+@@ -77,7 +91,10 @@ const cohortsCreate = (): ToolBase<ReturnType<typeof CohortsCreateSchema>, WithP
+                 path: `/api/projects/${encodeURIComponent(String(projectId))}/cohorts/`,
+                 body,
+             })
+-            return await withPostHogUrl(context, result, `/cohorts/${result.id}`)
++            const filtered = (
++                params.full ? result : buildWriteReceipt(result, { fields: ['is_static', 'is_calculating'] })
++            ) as typeof result
++            return await withPostHogUrl(context, filtered, `/cohorts/${filtered.id}`)
+         },
+     })
+ 
+@@ -139,6 +156,14 @@ const CohortsPartialUpdateSchema = () => {
+     return CohortsPartialUpdateParams.omit({ project_id: true })
+         .extend(CohortsPartialUpdateBody.omit({ _create_in_folder: true, _create_static_person_ids: true }).shape)
+         .extend({ id: z.preprocess(castStringToInt, CohortsPartialUpdateParams.shape['id']) })
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const cohortsPartialUpdate = (): ToolBase<
+@@ -172,12 +197,21 @@ const cohortsPartialUpdate = (): ToolBase<
+             if (params.cohort_type !== undefined) {
+                 body['cohort_type'] = params.cohort_type
+             }
++            const before = params.full
++                ? undefined
++                : await readReceiptPreImage(
++                      context,
++                      `/api/projects/${encodeURIComponent(String(projectId))}/cohorts/${encodeURIComponent(String(params.id))}/`
++                  )
+             const result = await context.api.request<Schemas.Cohort>({
+                 method: 'PATCH',
+                 path: `/api/projects/${encodeURIComponent(String(projectId))}/cohorts/${encodeURIComponent(String(params.id))}/`,
+                 body,
+             })
+-            return await withPostHogUrl(context, result, `/cohorts/${result.id}`)
++            const filtered = (
++                params.full ? result : buildWriteReceipt(result, { fields: [], sent: body, before })
++            ) as typeof result
++            return await withPostHogUrl(context, filtered, `/cohorts/${filtered.id}`)
+         },
+     })
+ 
+diff --git a/services/mcp/src/tools/generated/dashboards.ts b/services/mcp/src/tools/generated/dashboards.ts
+index d757a24ec61..d319685a2f8 100644
+--- a/services/mcp/src/tools/generated/dashboards.ts
++++ b/services/mcp/src/tools/generated/dashboards.ts
+@@ -10,6 +10,7 @@ import {
+     withAgentNote,
+     omitResponseFields,
+     stripNullFields,
++    buildWriteReceipt,
+     withInformationalResponse,
+     type WithPostHogUrl,
+     type WithAgentNote,
+@@ -20,7 +21,16 @@ import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
+ const DashboardCreateSchema = () => {
+     const DashboardsCreateBody = orvalSchemas.DashboardsCreateBody()
+     const DashboardsCreateQueryParams = orvalSchemas.DashboardsCreateQueryParams()
+-    return DashboardsCreateQueryParams.omit({ format: true }).extend(DashboardsCreateBody.shape)
++    return DashboardsCreateQueryParams.omit({ format: true })
++        .extend(DashboardsCreateBody.shape)
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const dashboardCreate = (): ToolBase<
+@@ -82,72 +92,78 @@ const dashboardCreate = (): ToolBase<
+                 include_dashboards: params.include_dashboards,
+             },
+         })
+-        const filtered = stripNullFields(
+-            omitResponseFields(result, [
+-                'user_access_level',
+-                'creation_mode',
+-                'deleted',
+-                'breakdown_colors',
+-                'data_color_theme_id',
+-                'quick_filter_ids',
+-                'tiles.*.color',
+-                'tiles.*.transparent_background',
+-                'tiles.*.show_description',
+-                'tiles.*.button_tile',
+-                'tiles.*.insight.result',
+-                'tiles.*.insight.hasMore',
+-                'tiles.*.insight.columns',
+-                'tiles.*.insight.hogql',
+-                'tiles.*.insight.types',
+-                'tiles.*.insight.query_status',
+-                'tiles.*.insight.cache_target_age',
+-                'tiles.*.insight.next_allowed_client_refresh',
+-                'tiles.*.insight.filters_hash',
+-                'tiles.*.insight.dashboards',
+-                'tiles.*.insight.dashboard_tiles',
+-                'tiles.*.insight.user_access_level',
+-                'tiles.*.insight.filters',
+-                'tiles.*.insight.is_sample',
+-                'tiles.*.insight.saved',
+-                'tiles.*.insight.order',
+-                'tiles.*.insight.deleted',
+-                'tiles.*.insight.alerts',
+-                'tiles.*.insight.last_viewed_at',
+-                'tiles.*.insight.timezone',
+-                'tiles.*.insight.resolved_date_range',
+-                'tiles.*.insight.resolved_compare_date_range',
+-                'tiles.*.insight.filter_override_context',
+-                'created_by.uuid',
+-                'created_by.distinct_id',
+-                'created_by.is_email_verified',
+-                'created_by.hedgehog_config',
+-                'tiles.*.insight.created_by.uuid',
+-                'tiles.*.insight.created_by.distinct_id',
+-                'tiles.*.insight.created_by.is_email_verified',
+-                'tiles.*.insight.created_by.hedgehog_config',
+-                'tiles.*.insight.last_modified_by.uuid',
+-                'tiles.*.insight.last_modified_by.distinct_id',
+-                'tiles.*.insight.last_modified_by.is_email_verified',
+-                'tiles.*.insight.last_modified_by.hedgehog_config',
+-                'tiles.*.text.dashboard_tiles',
+-                'tiles.*.text.created_by.uuid',
+-                'tiles.*.text.created_by.distinct_id',
+-                'tiles.*.text.created_by.is_email_verified',
+-                'tiles.*.text.created_by.hedgehog_config',
+-                'tiles.*.text.last_modified_by.uuid',
+-                'tiles.*.text.last_modified_by.distinct_id',
+-                'tiles.*.text.last_modified_by.is_email_verified',
+-                'tiles.*.text.last_modified_by.hedgehog_config',
+-                'tiles.*.widget.dashboard_tiles',
+-                'tiles.*.widget.created_by.uuid',
+-                'tiles.*.widget.created_by.distinct_id',
+-                'tiles.*.widget.created_by.is_email_verified',
+-                'tiles.*.widget.created_by.hedgehog_config',
+-                'tiles.*.widget.last_modified_by.uuid',
+-                'tiles.*.widget.last_modified_by.distinct_id',
+-                'tiles.*.widget.last_modified_by.is_email_verified',
+-                'tiles.*.widget.last_modified_by.hedgehog_config',
+-            ])
++        const filtered = (
++            params.full
++                ? stripNullFields(
++                      omitResponseFields(result, [
++                          'user_access_level',
++                          'creation_mode',
++                          'deleted',
++                          'breakdown_colors',
++                          'data_color_theme_id',
++                          'quick_filter_ids',
++                          'tiles.*.color',
++                          'tiles.*.transparent_background',
++                          'tiles.*.show_description',
++                          'tiles.*.button_tile',
++                          'tiles.*.insight.result',
++                          'tiles.*.insight.hasMore',
++                          'tiles.*.insight.columns',
++                          'tiles.*.insight.hogql',
++                          'tiles.*.insight.types',
++                          'tiles.*.insight.query_status',
++                          'tiles.*.insight.cache_target_age',
++                          'tiles.*.insight.next_allowed_client_refresh',
++                          'tiles.*.insight.filters_hash',
++                          'tiles.*.insight.dashboards',
++                          'tiles.*.insight.dashboard_tiles',
++                          'tiles.*.insight.user_access_level',
++                          'tiles.*.insight.filters',
++                          'tiles.*.insight.is_sample',
++                          'tiles.*.insight.saved',
++                          'tiles.*.insight.order',
++                          'tiles.*.insight.deleted',
++                          'tiles.*.insight.alerts',
++                          'tiles.*.insight.last_viewed_at',
++                          'tiles.*.insight.timezone',
++                          'tiles.*.insight.resolved_date_range',
++                          'tiles.*.insight.resolved_compare_date_range',
++                          'tiles.*.insight.filter_override_context',
++                          'created_by.uuid',
++                          'created_by.distinct_id',
++                          'created_by.is_email_verified',
++                          'created_by.hedgehog_config',
++                          'tiles.*.insight.created_by.uuid',
++                          'tiles.*.insight.created_by.distinct_id',
++                          'tiles.*.insight.created_by.is_email_verified',
++                          'tiles.*.insight.created_by.hedgehog_config',
++                          'tiles.*.insight.last_modified_by.uuid',
++                          'tiles.*.insight.last_modified_by.distinct_id',
++                          'tiles.*.insight.last_modified_by.is_email_verified',
++                          'tiles.*.insight.last_modified_by.hedgehog_config',
++                          'tiles.*.text.dashboard_tiles',
++                          'tiles.*.text.created_by.uuid',
++                          'tiles.*.text.created_by.distinct_id',
++                          'tiles.*.text.created_by.is_email_verified',
++                          'tiles.*.text.created_by.hedgehog_config',
++                          'tiles.*.text.last_modified_by.uuid',
++                          'tiles.*.text.last_modified_by.distinct_id',
++                          'tiles.*.text.last_modified_by.is_email_verified',
++                          'tiles.*.text.last_modified_by.hedgehog_config',
++                          'tiles.*.widget.dashboard_tiles',
++                          'tiles.*.widget.created_by.uuid',
++                          'tiles.*.widget.created_by.distinct_id',
++                          'tiles.*.widget.created_by.is_email_verified',
++                          'tiles.*.widget.created_by.hedgehog_config',
++                          'tiles.*.widget.last_modified_by.uuid',
++                          'tiles.*.widget.last_modified_by.distinct_id',
++                          'tiles.*.widget.last_modified_by.is_email_verified',
++                          'tiles.*.widget.last_modified_by.hedgehog_config',
++                      ])
++                  )
++                : buildWriteReceipt(result, {
++                      fields: ['tiles.*.id', 'tiles.*.insight.short_id', 'tiles.*.insight.name'],
++                  })
+         ) as typeof result
+         return withInformationalResponse(
+             withAgentNote(
+@@ -180,9 +196,18 @@ const dashboardCreateTile = (): ToolBase<ReturnType<typeof DashboardCreateTileSc
+ 
+ const DashboardDeleteSchema = () => {
+     const DashboardsDestroyParams = orvalSchemas.DashboardsDestroyParams()
+-    return DashboardsDestroyParams.omit({ project_id: true }).extend({
+-        id: z.preprocess(castStringToInt, DashboardsDestroyParams.shape['id']),
+-    })
++    return DashboardsDestroyParams.omit({ project_id: true })
++        .extend({
++            id: z.preprocess(castStringToInt, DashboardsDestroyParams.shape['id']),
++        })
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const dashboardDelete = (): ToolBase<ReturnType<typeof DashboardDeleteSchema>, Schemas.Dashboard> => ({
+@@ -195,7 +220,8 @@ const dashboardDelete = (): ToolBase<ReturnType<typeof DashboardDeleteSchema>, S
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/dashboards/${encodeURIComponent(String(params.id))}/`,
+             body: { deleted: true },
+         })
+-        return result
++        const filtered = (params.full ? result : buildWriteReceipt(result, { fields: ['deleted'] })) as typeof result
++        return filtered
+     },
+ })
+ 
+@@ -411,7 +437,16 @@ const dashboardInsightsRun = (): ToolBase<
+ const DashboardReorderTilesSchema = () => {
+     const DashboardsReorderTilesCreateBody = orvalSchemas.DashboardsReorderTilesCreateBody()
+     const DashboardsReorderTilesCreateParams = orvalSchemas.DashboardsReorderTilesCreateParams()
+-    return DashboardsReorderTilesCreateParams.omit({ project_id: true }).extend(DashboardsReorderTilesCreateBody.shape)
++    return DashboardsReorderTilesCreateParams.omit({ project_id: true })
++        .extend(DashboardsReorderTilesCreateBody.shape)
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const dashboardReorderTiles = (): ToolBase<
+@@ -434,7 +469,22 @@ const dashboardReorderTiles = (): ToolBase<
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/dashboards/${encodeURIComponent(String(params.id))}/reorder_tiles/`,
+             body,
+         })
+-        return await withPostHogUrl(context, result, `/dashboard/${result.id}`)
++        const filtered = (
++            params.full
++                ? result
++                : buildWriteReceipt(result, {
++                      fields: [
++                          'tiles.*.id',
++                          'tiles.*.order',
++                          'tiles.*.layouts',
++                          'tiles.*.insight.id',
++                          'tiles.*.insight.short_id',
++                          'tiles.*.insight.name',
++                          'tiles.*.text.body',
++                      ],
++                  })
++        ) as typeof result
++        return await withPostHogUrl(context, filtered, `/dashboard/${filtered.id}`)
+     },
+ })
+ 
+diff --git a/services/mcp/src/tools/generated/product_analytics.ts b/services/mcp/src/tools/generated/product_analytics.ts
+index 41ae2225e49..0bcc7560d16 100644
+--- a/services/mcp/src/tools/generated/product_analytics.ts
++++ b/services/mcp/src/tools/generated/product_analytics.ts
+@@ -14,6 +14,8 @@ import {
+     withPostHogUrl,
+     withAgentNote,
+     omitResponseFields,
++    buildWriteReceipt,
++    readReceiptPreImage,
+     pickResponseFields,
+     type WithPostHogUrl,
+     type WithAgentNote,
+@@ -476,15 +478,24 @@ const eventsRetentionUpdateExecute = (): ToolBase<
+ 
+ const InsightCreateSchema = () => {
+     const InsightsCreateBody = orvalSchemas.InsightsCreateBody()
+-    return InsightsCreateBody.omit({ derived_name: true, order: true, deleted: true, _create_in_folder: true }).extend({
+-        query: InsightQuery,
+-        dashboards: InsightsCreateBody.shape['dashboards'].describe(
+-            'Dashboard IDs this insight should belong to. This is a full replacement — always include all existing dashboard IDs when adding a new one.'
+-        ),
+-        description: InsightsCreateBody.shape['description'].describe(
+-            'Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.'
+-        ),
+-    })
++    return InsightsCreateBody.omit({ derived_name: true, order: true, deleted: true, _create_in_folder: true })
++        .extend({
++            query: InsightQuery,
++            dashboards: InsightsCreateBody.shape['dashboards'].describe(
++                'Dashboard IDs this insight should belong to. This is a full replacement — always include all existing dashboard IDs when adding a new one.'
++            ),
++            description: InsightsCreateBody.shape['description'].describe(
++                'Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.'
++            ),
++        })
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const insightCreate = (): ToolBase<
+@@ -519,15 +530,21 @@ const insightCreate = (): ToolBase<
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/insights/`,
+             body,
+         })
+-        const filtered = omitResponseFields(result, [
+-            'result',
+-            'hasMore',
+-            'columns',
+-            'is_cached',
+-            'query_status',
+-            'hogql',
+-            'types',
+-        ]) as typeof result
++        const filtered = (
++            params.full
++                ? omitResponseFields(result, [
++                      'result',
++                      'hasMore',
++                      'columns',
++                      'is_cached',
++                      'query_status',
++                      'hogql',
++                      'types',
++                  ])
++                : buildWriteReceipt(result, {
++                      fields: ['dashboards', 'dashboard_tiles.*.id', 'dashboard_tiles.*.dashboard_id'],
++                  })
++        ) as typeof result
+         return withAgentNote(
+             await withPostHogUrl(context, filtered, `/insights/${filtered.short_id}`),
+             'When you tell the user about this insight, name the display you chose and one or two other displays that also fit this query, in one short sentence, and offer to change it. If the user agrees, change it with insight-update. Suggest only displays that the insight kind supports and that fit the question:\n\n- Trends (`trendsFilter.display`): for change over time `ActionsLineGraph`, `ActionsAreaGraph`, `ActionsBar` or `ActionsUnstackedBar`; for totals per breakdown value or series `ActionsBarValue`, `ActionsPie` or `ActionsTable`; for one number `Metric` or `BoldNumber`, never with a breakdown or more than one series; `WorldMap` only for a `$geoip_country_code` breakdown.\n- Funnels (`funnelsFilter.funnelVizType`): `steps` for drop-off per step, `trends` for conversion over time, or `time_to_convert` for how long users take.\n- Retention (`retentionFilter.display`): `ActionsLineGraph` or `ActionsBar`.\n- Stickiness (`stickinessFilter.display`): `ActionsLineGraph`, `ActionsBar` or `ActionsAreaGraph`.\n- Lifecycle: stacked or side-by-side bars (`lifecycleFilter.stacked`).\n- SQL (`DataVisualizationNode` `display`): only displays that fit the columns the query returns.\n- Paths: suggest nothing.\n\nUse the chart names a person sees, such as "bar chart per category" or "line chart", not enum values or tool names. If the user named the chart they want, do not suggest others. If you create several insights in this task, give one short list of alternatives at the end, not one per insight.\n\nAfter creating a Trends, SQL (HogQL), Funnels or Metrics insight, call insight-query with the returned short_id, read the current value, and offer an alert when the metric is one someone would act on if it moved sharply (signups, active users, revenue, conversion rate, error or failure counts, latency). Name an actual number, never a placeholder such as X, for example "want me to alert you when daily signups drop below 400?". A count sitting at zero, such as errors or failures, is a strong case, so offer an upper bound of 1. Offer nothing when the insight returned no rows. When no absolute number fits and the insight supports it, offer a relative-change alert on a sudden increase or decrease. Skip metrics nobody acts on, such as raw pageview or event-volume counts, and skip high-cardinality breakdowns. Judge the metric, not the request. A newly created insight, or one the user just asked to see, is not throwaway for that reason. If the user already declined an alert in this conversation, do not offer again. If alert-create is unavailable, say nothing about alerts. Wait for the user to accept before creating an alert. After substantial visual changes, check the final saved insight once if browser access is already available. Skip browser checks for small edits.\n'
+@@ -539,7 +556,14 @@ const InsightDeleteSchema = () => {
+     const InsightsDestroyParams = orvalSchemas.InsightsDestroyParams()
+     return z.preprocess(
+         normalizeParamAliases({ id: ['insightId', 'insight_id', 'short_id', 'shortId'] }),
+-        InsightsDestroyParams.omit({ project_id: true })
++        InsightsDestroyParams.omit({ project_id: true }).extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+     )
+ }
+ 
+@@ -553,7 +577,8 @@ const insightDelete = (): ToolBase<ReturnType<typeof InsightDeleteSchema>, Schem
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/insights/${encodeURIComponent(String(params.id))}/`,
+             body: { deleted: true },
+         })
+-        return result
++        const filtered = (params.full ? result : buildWriteReceipt(result, { fields: ['deleted'] })) as typeof result
++        return filtered
+     },
+ })
+ 
+@@ -631,6 +656,14 @@ const InsightUpdateSchema = () => {
+                     'Optional, about 15 words. Omit if the name is enough. No change notes. Max 400 characters.'
+                 ),
+             })
++            .extend({
++                full: z
++                    .boolean()
++                    .optional()
++                    .describe(
++                        'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                    ),
++            })
+     )
+ }
+ 
+@@ -661,20 +694,34 @@ const insightUpdate = (): ToolBase<
+         if (params.query !== undefined) {
+             body['query'] = params.query
+         }
++        const before = params.full
++            ? undefined
++            : await readReceiptPreImage(
++                  context,
++                  `/api/projects/${encodeURIComponent(String(projectId))}/insights/${encodeURIComponent(String(params.id))}/`
++              )
+         const result = await context.api.request<Schemas.Insight>({
+             method: 'PATCH',
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/insights/${encodeURIComponent(String(params.id))}/`,
+             body,
+         })
+-        const filtered = omitResponseFields(result, [
+-            'result',
+-            'hasMore',
+-            'columns',
+-            'is_cached',
+-            'query_status',
+-            'hogql',
+-            'types',
+-        ]) as typeof result
++        const filtered = (
++            params.full
++                ? omitResponseFields(result, [
++                      'result',
++                      'hasMore',
++                      'columns',
++                      'is_cached',
++                      'query_status',
++                      'hogql',
++                      'types',
++                  ])
++                : buildWriteReceipt(result, {
++                      fields: ['dashboards', 'dashboard_tiles.*.id', 'dashboard_tiles.*.dashboard_id'],
++                      sent: body,
++                      before,
++                  })
++        ) as typeof result
+         return withAgentNote(
+             await withPostHogUrl(context, filtered, `/insights/${filtered.short_id}`),
+             "If this update added the insight to a dashboard through the `dashboards` field, consider offering the user a recurring delivery of that dashboard as a next step. `dashboards` is a full replacement, so only offer when the dashboard id you just added was not already on the insight before this call. Offer at most once per dashboard in a conversation, however many insights you attach to it. First call subscriptions-list with `dashboard` set to that dashboard's id, and do not offer a second subscription when it returns one. Say nothing when this update left `dashboards` alone or only removed the insight from a dashboard. Describe it the way a person would recognize it, for example a weekly email every Monday morning with these charts attached, or the same thing posted to a Slack channel. To create it, use subscriptions-create. It needs `dashboard` set to the dashboard's id, `dashboard_export_insights` listing up to 20 charts, `target_type` of `email` or `slack`, and `target_value`, `frequency`, `interval` and `start_date`. For a Slack delivery, also set `integration_id`. Find the connected Slack workspace with integrations-list (filter kind=slack) and the channel for `target_value` with integrations-channels-retrieve. Ask the user for the recipients and the cadence rather than choosing them, since this creates a recurring outbound delivery. If either subscriptions-create or subscriptions-list is not available to you in this session, say nothing about subscriptions. If the user already declined a subscription earlier in this conversation, do not offer again."
+diff --git a/services/mcp/src/tools/generated/surveys.ts b/services/mcp/src/tools/generated/surveys.ts
+index 0be340bc1f1..f4d7ea54c56 100644
+--- a/services/mcp/src/tools/generated/surveys.ts
++++ b/services/mcp/src/tools/generated/surveys.ts
+@@ -5,7 +5,7 @@ import type { Schemas } from '@/api/generated'
+ import * as orvalSchemas from '@/generated/surveys/api'
+ import { withUiApp } from '@/resources/ui-apps'
+ import { normalizeParamAliases } from '@/tools/cast-helpers'
+-import { withPostHogUrl, type WithPostHogUrl } from '@/tools/tool-utils'
++import { withPostHogUrl, buildWriteReceipt, readReceiptPreImage, type WithPostHogUrl } from '@/tools/tool-utils'
+ import type { Context, ToolBase, ZodObjectAny } from '@/tools/types'
+ 
+ const SurveyCreateSchema = () => {
+@@ -25,41 +25,50 @@ const SurveyCreateSchema = () => {
+         response_sampling_limit: true,
+         response_sampling_daily_limits: true,
+         _create_in_folder: true,
+-    }).extend({
+-        appearance: SurveysCreateBody.shape['appearance'].describe(
+-            'Optional appearance customization. Omit this to keep the default styling. whiteLabel=true requires the organization to have the white-labelling entitlement (Enterprise); leave it unset unless requested and available. surveyPopupDelaySeconds must be non-negative.'
+-        ),
+-        type: SurveysCreateBody.shape['type'].describe(
+-            'Survey type. Use popover for most in-app surveys, widget for always-available feedback entrypoints, external_survey for hosted forms with a shareable public URL, and api only for headless custom implementations.'
+-        ),
+-        schedule: SurveysCreateBody.shape['schedule'].describe(
+-            'How often a person can see the survey. Omit this to use the default once behavior. Use recurring only when the user explicitly asks for a repeated schedule, and set iteration_frequency_days with it. Set iteration_count for a fixed number of repeats, or repeat_until_stopped=true to keep repeating (for example an ongoing NPS survey every 90 days). Use always when the user wants the survey to show every time its display conditions are met, also after the person responds or dismisses it. The survey editor calls this "Every time the display conditions are met". An always popover without display conditions or a wait period shows again and again, so suggest a URL condition or seenSurveyWaitPeriodInDays.'
+-        ),
+-        questions: SurveysCreateBody.shape['questions'].describe(
+-            "Complete survey question list. Prefer 1-3 questions unless the user explicitly asks for a longer survey. Use rating questions for NPS/CSAT, open for freeform feedback, and choice questions when the user wants structured answers. Questions can include inline translations on each question, keyed by language codes other than base_language (default 'en')."
+-        ),
+-        conditions: SurveysCreateBody.shape['conditions'].describe(
+-            'Display conditions for in-app surveys, such as URL matching, event triggers, device filters, or linked flag variants. To target people, groups, or cohorts by properties, use targeting_flag_filters instead. Do not use URL, selector, event, device, or linkedFlagVariant conditions for external_survey forms.'
+-        ),
+-        start_date: SurveysCreateBody.shape['start_date'].describe(
+-            'Setting this launches the survey immediately. Leave unset unless the user explicitly asks to launch now.'
+-        ),
+-        linked_flag_id: SurveysCreateBody.shape['linked_flag_id'].describe(
+-            'Feature flag ID linked to this survey. Use only when the user explicitly wants the survey linked to a feature flag. Resolve the flag ID first, preferably with SQL in v2.'
+-        ),
+-        targeting_flag_filters: SurveysCreateBody.shape['targeting_flag_filters'].describe(
+-            'Target an in-app survey to a subset of users by person, group, or cohort properties. Pass one or more rules in groups[].properties[], each with key, value, operator, and an optional type. Use this instead of conditions for property targeting. Do not use this for external_survey forms. Cohorts with behavioral filters cannot be used directly. Use a supported static cohort snapshot only with user approval; never remove targeting rules to work around validation.'
+-        ),
+-        enable_iframe_embedding: SurveysCreateBody.shape['enable_iframe_embedding'].describe(
+-            'Allows an external_survey form to be embedded in an iframe. Use only when the user explicitly asks for iframe embedding.'
+-        ),
+-        translations: SurveysCreateBody.shape['translations'].describe(
+-            "Optional survey-level translations keyed by language code. Use for translated survey name, description, thank-you message, and intro screen fields. Question text translations belong inside each question's translations object. Never add a key for the base language: when the untranslated text is not English, set base_language to its language code instead of adding an 'en' entry."
+-        ),
+-        form_content: SurveysCreateBody.shape['form_content'].describe(
+-            'Optional hosted-form content configuration for external_survey forms. Only include this when the user explicitly asks to customize the hosted form content beyond the standard question flow.'
+-        ),
+     })
++        .extend({
++            appearance: SurveysCreateBody.shape['appearance'].describe(
++                'Optional appearance customization. Omit this to keep the default styling. whiteLabel=true requires the organization to have the white-labelling entitlement (Enterprise); leave it unset unless requested and available. surveyPopupDelaySeconds must be non-negative.'
++            ),
++            type: SurveysCreateBody.shape['type'].describe(
++                'Survey type. Use popover for most in-app surveys, widget for always-available feedback entrypoints, external_survey for hosted forms with a shareable public URL, and api only for headless custom implementations.'
++            ),
++            schedule: SurveysCreateBody.shape['schedule'].describe(
++                'How often a person can see the survey. Omit this to use the default once behavior. Use recurring only when the user explicitly asks for a repeated schedule, and set iteration_frequency_days with it. Set iteration_count for a fixed number of repeats, or repeat_until_stopped=true to keep repeating (for example an ongoing NPS survey every 90 days). Use always when the user wants the survey to show every time its display conditions are met, also after the person responds or dismisses it. The survey editor calls this "Every time the display conditions are met". An always popover without display conditions or a wait period shows again and again, so suggest a URL condition or seenSurveyWaitPeriodInDays.'
++            ),
++            questions: SurveysCreateBody.shape['questions'].describe(
++                "Complete survey question list. Prefer 1-3 questions unless the user explicitly asks for a longer survey. Use rating questions for NPS/CSAT, open for freeform feedback, and choice questions when the user wants structured answers. Questions can include inline translations on each question, keyed by language codes other than base_language (default 'en')."
++            ),
++            conditions: SurveysCreateBody.shape['conditions'].describe(
++                'Display conditions for in-app surveys, such as URL matching, event triggers, device filters, or linked flag variants. To target people, groups, or cohorts by properties, use targeting_flag_filters instead. Do not use URL, selector, event, device, or linkedFlagVariant conditions for external_survey forms.'
++            ),
++            start_date: SurveysCreateBody.shape['start_date'].describe(
++                'Setting this launches the survey immediately. Leave unset unless the user explicitly asks to launch now.'
++            ),
++            linked_flag_id: SurveysCreateBody.shape['linked_flag_id'].describe(
++                'Feature flag ID linked to this survey. Use only when the user explicitly wants the survey linked to a feature flag. Resolve the flag ID first, preferably with SQL in v2.'
++            ),
++            targeting_flag_filters: SurveysCreateBody.shape['targeting_flag_filters'].describe(
++                'Target an in-app survey to a subset of users by person, group, or cohort properties. Pass one or more rules in groups[].properties[], each with key, value, operator, and an optional type. Use this instead of conditions for property targeting. Do not use this for external_survey forms. Cohorts with behavioral filters cannot be used directly. Use a supported static cohort snapshot only with user approval; never remove targeting rules to work around validation.'
++            ),
++            enable_iframe_embedding: SurveysCreateBody.shape['enable_iframe_embedding'].describe(
++                'Allows an external_survey form to be embedded in an iframe. Use only when the user explicitly asks for iframe embedding.'
++            ),
++            translations: SurveysCreateBody.shape['translations'].describe(
++                "Optional survey-level translations keyed by language code. Use for translated survey name, description, thank-you message, and intro screen fields. Question text translations belong inside each question's translations object. Never add a key for the base language: when the untranslated text is not English, set base_language to its language code instead of adding an 'en' entry."
++            ),
++            form_content: SurveysCreateBody.shape['form_content'].describe(
++                'Optional hosted-form content configuration for external_survey forms. Only include this when the user explicitly asks to customize the hosted form content beyond the standard question flow.'
++            ),
++        })
++        .extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+ }
+ 
+ const surveyCreate = (): ToolBase<
+@@ -134,7 +143,14 @@ const surveyCreate = (): ToolBase<
+                 path: `/api/projects/${encodeURIComponent(String(projectId))}/surveys/`,
+                 body,
+             })
+-            return await withPostHogUrl(context, result, `/surveys/${result.id}`)
++            const filtered = (
++                params.full
++                    ? result
++                    : buildWriteReceipt(result, {
++                          fields: ['type', 'start_date', 'questions.*.id', 'questions.*.type', 'questions.*.question'],
++                      })
++            ) as typeof result
++            return await withPostHogUrl(context, filtered, `/surveys/${filtered.id}`)
+         },
+     })
+ 
+@@ -142,7 +158,14 @@ const SurveyDeleteSchema = () => {
+     const SurveysDestroyParams = orvalSchemas.SurveysDestroyParams()
+     return z.preprocess(
+         normalizeParamAliases({ id: ['survey_id', 'surveyId'] }),
+-        SurveysDestroyParams.omit({ project_id: true })
++        SurveysDestroyParams.omit({ project_id: true }).extend({
++            full: z
++                .boolean()
++                .optional()
++                .describe(
++                    'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                ),
++        })
+     )
+ }
+ 
+@@ -156,7 +179,8 @@ const surveyDelete = (): ToolBase<ReturnType<typeof SurveyDeleteSchema>, Schemas
+             path: `/api/projects/${encodeURIComponent(String(projectId))}/surveys/${encodeURIComponent(String(params.id))}/`,
+             body: { archived: true },
+         })
+-        return result
++        const filtered = (params.full ? result : buildWriteReceipt(result, { fields: ['archived'] })) as typeof result
++        return filtered
+     },
+ })
+ 
+@@ -297,6 +321,14 @@ const SurveyUpdateSchema = () => {
+                     'Hosted-form content configuration for external_survey forms. Do not provide this field unless editing hosted-form content. Preserve existing content fields that should remain.'
+                 ),
+             })
++            .extend({
++                full: z
++                    .boolean()
++                    .optional()
++                    .describe(
++                        'Set true to get the full API response instead of the short write receipt (id, name, what changed, link).'
++                    ),
++            })
+     )
+ }
+ 
+@@ -379,12 +411,21 @@ const surveyUpdate = (): ToolBase<
+             if (params.form_content !== undefined) {
+                 body['form_content'] = params.form_content
+             }
++            const before = params.full
++                ? undefined
++                : await readReceiptPreImage(
++                      context,
++                      `/api/projects/${encodeURIComponent(String(projectId))}/surveys/${encodeURIComponent(String(params.id))}/`
++                  )
+             const result = await context.api.request<Schemas.SurveySerializerCreateUpdateOnly>({
+                 method: 'PATCH',
+                 path: `/api/projects/${encodeURIComponent(String(projectId))}/surveys/${encodeURIComponent(String(params.id))}/`,
+                 body,
+             })
+-            return await withPostHogUrl(context, result, `/surveys/${result.id}`)
++            const filtered = (
++                params.full ? result : buildWriteReceipt(result, { fields: [], sent: body, before })
++            ) as typeof result
++            return await withPostHogUrl(context, filtered, `/surveys/${filtered.id}`)
+         },
+     })
+ 
+diff --git a/services/mcp/src/tools/tool-utils.ts b/services/mcp/src/tools/tool-utils.ts
+index 86a817ab858..a75fd51e4e5 100644
+--- a/services/mcp/src/tools/tool-utils.ts
++++ b/services/mcp/src/tools/tool-utils.ts
+@@ -248,6 +248,152 @@ function removeAtPath(obj: unknown, segments: string[]): void {
+     }
+ }
+ 
++/**
++ * Fields a write receipt keeps whenever the response has them: enough to name the object, link
++ * to it and pass its version to the next write.
++ */
++export const RECEIPT_IDENTITY_FIELDS = ['id', 'short_id', 'key', 'name', 'version'] as const
++
++export interface WriteReceiptOptions {
++    /** Extra dot-path fields (wildcards allowed) the receipt keeps beyond the identity fields. */
++    fields?: readonly string[]
++    /** The request body the write sent. Its keys are the fields the receipt diffs. */
++    sent?: Record<string, unknown>
++    /** The object as it was before the write, read by `readReceiptPreImage`. */
++    before?: unknown
++}
++
++export interface ReceiptChange {
++    from?: unknown
++    to: unknown
++}
++
++export type WriteReceipt = Record<string, unknown> & {
++    changed?: Record<string, ReceiptChange>
++    unchanged?: string[]
++}
++
++function isPlainRecord(value: unknown): value is Record<string, unknown> {
++    return value !== null && typeof value === 'object' && !Array.isArray(value)
++}
++
++function deepEqual(a: unknown, b: unknown): boolean {
++    if (a === b) {
++        return true
++    }
++    if (Array.isArray(a) && Array.isArray(b)) {
++        return a.length === b.length && a.every((item, index) => deepEqual(item, b[index]))
++    }
++    if (isPlainRecord(a) && isPlainRecord(b)) {
++        const aKeys = Object.keys(a).filter((key) => a[key] !== undefined)
++        const bKeys = Object.keys(b).filter((key) => b[key] !== undefined)
++        return aKeys.length === bKeys.length && aKeys.every((key) => deepEqual(a[key], b[key]))
++    }
++    return false
++}
++
++/** `false`, `null`, `''`, `[]` and `{}`: what an unset field and its default look like. */
++function isEmptyDefault(value: unknown): boolean {
++    if (value === undefined || value === null || value === false || value === '') {
++        return true
++    }
++    if (Array.isArray(value)) {
++        return value.length === 0
++    }
++    return isPlainRecord(value) && Object.keys(value).length === 0
++}
++
++/**
++ * Collects the leaf-most paths at which `before` and `after` differ. Objects recurse by key and
++ * same-length arrays by index, so editing one question of three reports `questions.1.question`
++ * rather than both whole arrays. Arrays whose length changed are reported whole. Inside an object,
++ * a key that was absent and is now `false`, `null`, empty or `[]` is the server filling a default,
++ * not a change, and is left out.
++ */
++function collectChanges(before: unknown, after: unknown, path: string, into: Record<string, ReceiptChange>): void {
++    if (deepEqual(before, after)) {
++        return
++    }
++    if (before === undefined && isEmptyDefault(after) && path.includes('.')) {
++        return
++    }
++    if (isPlainRecord(before) && isPlainRecord(after)) {
++        for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
++            collectChanges(before[key], after[key], `${path}.${key}`, into)
++        }
++        return
++    }
++    if (Array.isArray(before) && Array.isArray(after) && before.length === after.length) {
++        before.forEach((item, index) => collectChanges(item, after[index], `${path}.${index}`, into))
++        return
++    }
++    into[path] = { from: before ?? null, to: after ?? null }
++}
++
++/**
++ * Shrinks a write or delete response to a receipt: the identity fields, any extra `fields`, and,
++ * when the caller sent a body, what the write changed. With a pre-image each sent field that
++ * changed is listed under `changed` as `{from, to}` and each that did not under `unchanged`, so a
++ * no-op write is visible. Without one (the read failed, or the tool creates) a sent field that
++ * the response carries is listed with its stored value only.
++ *
++ * The receipt is computed from the server's response, never from the request, so it shows what
++ * was stored. `from` comes from a read made just before the write and can be stale if someone else
++ * edited the object in between; the write itself is the same request it always was.
++ */
++export function buildWriteReceipt(result: unknown, options: WriteReceiptOptions = {}): WriteReceipt {
++    if (!isPlainRecord(result)) {
++        return result as WriteReceipt
++    }
++    const receipt: WriteReceipt = pickResponseFields(result, [
++        ...RECEIPT_IDENTITY_FIELDS,
++        ...(options.fields ?? []),
++    ]) as WriteReceipt
++    const sentKeys = Object.keys(options.sent ?? {})
++    if (sentKeys.length === 0) {
++        return receipt
++    }
++    const before = isPlainRecord(options.before) ? options.before : undefined
++    const changed: Record<string, ReceiptChange> = {}
++    const unchanged: string[] = []
++    for (const key of sentKeys) {
++        if (!(key in result)) {
++            continue
++        }
++        if (!before) {
++            changed[key] = { to: result[key] ?? null }
++            continue
++        }
++        const changesForKey: Record<string, ReceiptChange> = {}
++        collectChanges(before[key], result[key], key, changesForKey)
++        if (Object.keys(changesForKey).length === 0) {
++            unchanged.push(key)
++        } else {
++            Object.assign(changed, changesForKey)
++        }
++    }
++    if (Object.keys(changed).length > 0) {
++        receipt.changed = changed
++    }
++    if (unchanged.length > 0) {
++        receipt.unchanged = unchanged
++    }
++    return receipt
++}
++
++/**
++ * Reads the object a write is about to change, for the receipt's `from` values. Best-effort: a
++ * failed read returns undefined and the receipt falls back to stored values only. The read is
++ * display-only and never feeds the write.
++ */
++export async function readReceiptPreImage<T = unknown>(context: Context, path: string): Promise<T | undefined> {
++    try {
++        return await context.api.request<T>({ method: 'GET', path })
++    } catch {
++        return undefined
++    }
++}
++
+ /**
+  * Remove keys whose value is `null`, recursing through objects and arrays. Array element
+  * positions are kept.
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/action-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/action-create.json
+index ea9043df8f2..aac3468fa95 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/action-create.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/action-create.json
+@@ -5,6 +5,10 @@
+             "description": "Human-readable description of what this action represents.",
+             "type": "string"
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "name": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/action-delete.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/action-delete.json
+index 4e1e5754301..98ff0b15de0 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/action-delete.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/action-delete.json
+@@ -1,6 +1,10 @@
+ {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "properties": {
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A unique integer value identifying this action.",
+             "type": "number"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/action-update.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/action-update.json
+index 3ec89935613..b4908177ee4 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/action-update.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/action-update.json
+@@ -5,6 +5,10 @@
+             "description": "Human-readable description of what this action represents.",
+             "type": "string"
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A unique integer value identifying this action.",
+             "type": "number"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-create.json
+index 11d41d3c3b1..d26931a381d 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-create.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-create.json
+@@ -60,6 +60,10 @@
+             ],
+             "description": "Optional emoji shown in place of the default badge when this annotation is surfaced on a chart."
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "hidden_in_user_interface": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-delete.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-delete.json
+index 7a52f47f630..44d510354c6 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-delete.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotation-delete.json
+@@ -1,6 +1,10 @@
+ {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "properties": {
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A unique integer value identifying this annotation.",
+             "type": "number"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-partial-update.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-partial-update.json
+index b828d943218..16f28a958bc 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-partial-update.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-partial-update.json
+@@ -60,6 +60,10 @@
+             ],
+             "description": "Optional emoji shown in place of the default badge when this annotation is surfaced on a chart."
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "hidden_in_user_interface": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-create.json
+index 7b4f151e77b..195006005fb 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-create.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-create.json
+@@ -471,6 +471,10 @@
+                 }
+             ]
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "is_static": {
+             "type": "boolean"
+         },
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-partial-update.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-partial-update.json
+index a5857fd07e5..cba2ab52b49 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-partial-update.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/cohorts-partial-update.json
+@@ -474,6 +474,10 @@
+                 }
+             ]
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A unique integer value identifying this cohort.",
+             "type": "number"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create.json
+index de4543e0f57..de7d1267c25 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-create.json
+@@ -88,6 +88,10 @@
+         "description": {
+             "type": "string"
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "grid_spacing": {
+             "description": "Named tile density preset. Use tight, condensed, standard, relaxed, or wide.\n\n* `tight` - tight\n* `condensed` - condensed\n* `standard` - standard\n* `relaxed` - relaxed\n* `wide` - wide",
+             "enum": ["tight", "condensed", "standard", "relaxed", "wide"],
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-delete.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-delete.json
+index 7bc858b5e1c..a9adab8b1fa 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-delete.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-delete.json
+@@ -1,6 +1,10 @@
+ {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "properties": {
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A unique integer value identifying this dashboard.",
+             "type": "number"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-reorder-tiles.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-reorder-tiles.json
+index bb00cc52495..53ed6a7edb1 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-reorder-tiles.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/dashboard-reorder-tiles.json
+@@ -1,6 +1,10 @@
+ {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "properties": {
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A unique integer value identifying this dashboard.",
+             "type": "number"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-create.json
+index 83ce5aaa35f..48e45c64234 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-create.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-create.json
+@@ -23,6 +23,10 @@
+         "favorited": {
+             "type": "boolean"
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "name": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-delete.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-delete.json
+index 11142d02469..1082c271599 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-delete.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-delete.json
+@@ -1,6 +1,10 @@
+ {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "properties": {
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update.json
+index c7cb83b7167..537f71fd40c 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update.json
+@@ -23,6 +23,10 @@
+         "favorited": {
+             "type": "boolean"
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-create.json
+index 3f66b723345..52711942a05 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-create.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-create.json
+@@ -287,6 +287,10 @@
+         "form_content": {
+             "description": "Optional hosted-form content configuration for external_survey forms. Only include this when the user explicitly asks to customize the hosted form content beyond the standard question flow."
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "iteration_count": {
+             "anyOf": [
+                 {
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-delete.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-delete.json
+index 1e2ce50c84e..f2e5ca2698b 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-delete.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-delete.json
+@@ -1,6 +1,10 @@
+ {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "properties": {
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A UUID string identifying this survey.",
+             "type": "string"
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update.json
+index 96cd44bfd86..a80e51dc7ee 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update.json
+@@ -303,6 +303,10 @@
+         "form_content": {
+             "description": "Hosted-form content configuration for external_survey forms. Do not provide this field unless editing hosted-form content. Preserve existing content fields that should remain."
+         },
++        "full": {
++            "description": "Set true to get the full API response instead of the short write receipt (id, name, what changed, link).",
++            "type": "boolean"
++        },
+         "id": {
+             "description": "A UUID string identifying this survey.",
+             "type": "string"
+diff --git a/services/mcp/tests/unit/write-receipts.test.ts b/services/mcp/tests/unit/write-receipts.test.ts
+new file mode 100644
+index 00000000000..43baa3ab280
+--- /dev/null
++++ b/services/mcp/tests/unit/write-receipts.test.ts
+@@ -0,0 +1,376 @@
++import fs from 'node:fs'
++import path from 'node:path'
++import { describe, expect, it, vi } from 'vitest'
++import { parse as parseYaml } from 'yaml'
++import { z } from 'zod'
++
++import { formatResponse } from '@/lib/response'
++import { trimUserRefs } from '@/lib/user-refs'
++import { GENERATED_TOOL_MAP } from '@/tools/generated'
++import { buildWriteReceipt, readReceiptPreImage } from '@/tools/tool-utils'
++import type { Context } from '@/tools/types'
++
++import { generateToolCode, resolveReceiptPlan } from '../../scripts/generate-tools'
++import type { OpenApiSpec, ResolvedOperation } from '../../scripts/generate-tools'
++import { ToolConfigSchema, type ToolConfig } from '../../scripts/yaml-config-schema'
++
++const USER = {
++    id: 1,
++    uuid: '01a1c6ad-64b3-0000-06ce-0fcf1fe26771',
++    distinct_id: 'nPvQFFFdWoEnLp6BoNemPqQpcgzUmuyXYWe2WFNNMQZY',
++    first_name: 'Bench',
++    last_name: 'Owner',
++    email: 'bench-owner@example.test',
++    is_email_verified: false,
++    hedgehog_config: null,
++    role_at_organization: 'engineering',
++}
++
++// Shaped like PATCH /api/projects/:id/insights/:id/ on the friction session (resp 0083).
++const INSIGHT = {
++    id: 82,
++    short_id: 'i1ukxWSK',
++    name: 'friction-old 01 pricing page views',
++    derived_name: null,
++    query: {
++        kind: 'InsightVizNode',
++        source: {
++            kind: 'TrendsQuery',
++            series: [{ kind: 'EventsNode', math: 'total', event: 'friction-pageview' }],
++            dateRange: { date_from: '-30d' },
++        },
++    },
++    deleted: false,
++    dashboards: [],
++    dashboard_tiles: [],
++    created_by: USER,
++    last_modified_by: USER,
++    tags: [] as string[],
++    filters_hash: 'cache_1_fdab',
++    result: [{ data: [1, 2, 3] }],
++}
++
++function contextWith(request: ReturnType<typeof vi.fn>): Context {
++    return {
++        api: { request, getProjectBaseUrl: (id: string) => `http://localhost:8010/project/${id}` },
++        stateManager: { getProjectId: async () => '1' },
++    } as unknown as Context
++}
++
++describe('buildWriteReceipt', () => {
++    it('keeps the identity fields and the listed fields only', () => {
++        const receipt = buildWriteReceipt(INSIGHT, { fields: ['dashboards'] })
++        expect(receipt).toEqual({ id: 82, short_id: 'i1ukxWSK', name: INSIGHT.name, dashboards: [] })
++    })
++
++    it('lists each sent field it changed as from/to and each it did not change as unchanged', () => {
++        const after = { ...INSIGHT, tags: ['friction-legacy'] }
++        const receipt = buildWriteReceipt(after, {
++            sent: { tags: ['friction-legacy'], name: INSIGHT.name },
++            before: INSIGHT,
++        })
++        expect(receipt.changed).toEqual({ tags: { from: [], to: ['friction-legacy'] } })
++        expect(receipt.unchanged).toEqual(['name'])
++    })
++
++    it('reports the leaf path of a nested change, by index for same-length arrays', () => {
++        const before = {
++            id: 1,
++            questions: [
++                { id: 'a', question: 'Old?' },
++                { id: 'b', question: 'Same' },
++            ],
++        }
++        const after = {
++            id: 1,
++            questions: [
++                { id: 'a', question: 'New?' },
++                { id: 'b', question: 'Same' },
++            ],
++        }
++        const receipt = buildWriteReceipt(after, { sent: { questions: after.questions }, before })
++        expect(receipt.changed).toEqual({ 'questions.0.question': { from: 'Old?', to: 'New?' } })
++    })
++
++    it('reports a whole array when its length changed', () => {
++        const before = { id: 1, query: { source: { series: [{ event: 'a' }] } } }
++        const after = { id: 1, query: { source: { series: [{ event: 'a' }, { event: 'b' }] } } }
++        const receipt = buildWriteReceipt(after, { sent: { query: after.query }, before })
++        expect(receipt.changed).toEqual({
++            'query.source.series': { from: [{ event: 'a' }], to: [{ event: 'a' }, { event: 'b' }] },
++        })
++    })
++
++    it('does not count a default the server filled in as a change', () => {
++        const before = { id: 1, query: { source: { series: [], funnelsFilter: { layout: 'horizontal' } } } }
++        const after = {
++            id: 1,
++            query: { source: { series: [], funnelsFilter: { layout: 'vertical', exclusions: [], showLegend: false } } },
++        }
++        const receipt = buildWriteReceipt(after, { sent: { query: after.query }, before })
++        expect(receipt.changed).toEqual({
++            'query.source.funnelsFilter.layout': { from: 'horizontal', to: 'vertical' },
++        })
++    })
++
++    it('falls back to the stored value when there is no pre-image', () => {
++        const receipt = buildWriteReceipt({ ...INSIGHT, name: 'renamed' }, { sent: { name: 'renamed' } })
++        expect(receipt.changed).toEqual({ name: { to: 'renamed' } })
++        expect(receipt.unchanged).toBeUndefined()
++    })
++
++    it('leaves a non-object result alone', () => {
++        expect(buildWriteReceipt(null)).toBeNull()
++        expect(buildWriteReceipt('ok')).toBe('ok')
++    })
++})
++
++describe('readReceiptPreImage', () => {
++    it('returns undefined instead of throwing when the read fails', async () => {
++        const request = vi.fn().mockRejectedValue(new Error('404'))
++        await expect(readReceiptPreImage(contextWith(request), '/api/x/')).resolves.toBeUndefined()
++        expect(request).toHaveBeenCalledWith({ method: 'GET', path: '/api/x/' })
++    })
++})
++
++describe('generated receipt tools', () => {
++    it('insight-update reads first, writes the same PATCH, and returns a receipt', async () => {
++        const request = vi
++            .fn()
++            .mockResolvedValueOnce(INSIGHT)
++            .mockResolvedValueOnce({ ...INSIGHT, tags: ['friction-legacy'] })
++        const tool = GENERATED_TOOL_MAP['insight-update']!()
++        const result = (await tool.handler(contextWith(request), { id: 82, tags: ['friction-legacy'] })) as Record<
++            string,
++            unknown
++        >
++
++        expect(request.mock.calls[0]![0]).toEqual({ method: 'GET', path: '/api/projects/1/insights/82/' })
++        expect(request.mock.calls[1]![0]).toEqual({
++            method: 'PATCH',
++            path: '/api/projects/1/insights/82/',
++            body: { tags: ['friction-legacy'] },
++        })
++        expect(result).toMatchObject({
++            id: 82,
++            short_id: 'i1ukxWSK',
++            changed: { tags: { from: [], to: ['friction-legacy'] } },
++            _posthogUrl: 'http://localhost:8010/project/1/insights/i1ukxWSK',
++        })
++        expect(result).not.toHaveProperty('query')
++        expect(result).not.toHaveProperty('created_by')
++    })
++
++    it('insight-update with full: true skips the read and returns the old shape', async () => {
++        const request = vi.fn().mockResolvedValue({ ...INSIGHT, tags: ['friction-legacy'] })
++        const tool = GENERATED_TOOL_MAP['insight-update']!()
++        const result = (await tool.handler(contextWith(request), {
++            id: 82,
++            tags: ['friction-legacy'],
++            full: true,
++        })) as Record<string, unknown>
++
++        expect(request).toHaveBeenCalledTimes(1)
++        expect(request.mock.calls[0]![0].body).toEqual({ tags: ['friction-legacy'] })
++        expect(result).toMatchObject({ query: INSIGHT.query, created_by: USER })
++        expect(result).not.toHaveProperty('result')
++        expect(result).not.toHaveProperty('changed')
++    })
++
++    it('insight-delete still soft-deletes and confirms with the deleted flag', async () => {
++        const request = vi.fn().mockResolvedValue({ ...INSIGHT, deleted: true })
++        const result = await GENERATED_TOOL_MAP['insight-delete']!().handler(contextWith(request), { id: 82 })
++        expect(request).toHaveBeenCalledWith({
++            method: 'PATCH',
++            path: '/api/projects/1/insights/82/',
++            body: { deleted: true },
++        })
++        expect(result).toEqual({ id: 82, short_id: 'i1ukxWSK', name: INSIGHT.name, deleted: true })
++    })
++
++    it('dashboard-reorder-tiles keeps the tile order and positions only', async () => {
++        const dashboard = {
++            id: 15,
++            name: 'friction-Product overview',
++            created_by: USER,
++            tiles: [
++                {
++                    id: 58,
++                    order: 0,
++                    layouts: { sm: { x: 0, y: 0, w: 6, h: 5 } },
++                    insight: { id: 95, short_id: '5oIMY3B7', name: 'Signup funnel', query: {}, result: [1, 2] },
++                },
++            ],
++        }
++        const request = vi.fn().mockResolvedValue(dashboard)
++        const result = await GENERATED_TOOL_MAP['dashboard-reorder-tiles']!().handler(contextWith(request), {
++            id: 15,
++            tile_order: [58],
++        })
++        expect(result).toEqual({
++            id: 15,
++            name: 'friction-Product overview',
++            tiles: [
++                {
++                    id: 58,
++                    order: 0,
++                    layouts: { sm: { x: 0, y: 0, w: 6, h: 5 } },
++                    insight: { id: 95, short_id: '5oIMY3B7', name: 'Signup funnel' },
++                },
++            ],
++            _posthogUrl: 'http://localhost:8010/project/1/dashboard/15',
++        })
++    })
++
++    it('survey-delete reports that it archived the survey', async () => {
++        const request = vi.fn().mockResolvedValue({ id: 's1', name: 'Survey', archived: true, questions: [] })
++        const result = await GENERATED_TOOL_MAP['survey-delete']!().handler(contextWith(request), { id: 's1' })
++        expect(result).toEqual({ id: 's1', name: 'Survey', archived: true })
++    })
++
++    it('every tool the change covers declares a receipt', () => {
++        const declared = (product: string): Record<string, { response?: { receipt?: unknown } }> =>
++            parseYaml(
++                fs.readFileSync(path.resolve(__dirname, `../../../../products/${product}/mcp/tools.yaml`), 'utf-8')
++            ).tools
++        const expected: Record<string, string[]> = {
++            product_analytics: ['insight-create', 'insight-update', 'insight-delete'],
++            dashboards: ['dashboard-create', 'dashboard-delete', 'dashboard-reorder-tiles'],
++            annotations: ['annotation-create', 'annotations-partial-update', 'annotation-delete'],
++            surveys: ['survey-create', 'survey-update', 'survey-delete'],
++            cohorts: ['cohorts-create', 'cohorts-partial-update'],
++            actions: ['action-create', 'action-update', 'action-delete'],
++        }
++        for (const [product, tools] of Object.entries(expected)) {
++            const definitions = declared(product)
++            for (const tool of tools) {
++                expect(definitions[tool]?.response?.receipt, tool).toBeTruthy()
++                const jsonSchema = z.toJSONSchema(GENERATED_TOOL_MAP[tool]!().schema, { io: 'input' }) as {
++                    properties?: Record<string, unknown>
++                }
++                expect(jsonSchema.properties, tool).toHaveProperty('full')
++            }
++        }
++    })
++})
++
++describe('receipt codegen', () => {
++    const spec: OpenApiSpec = {
++        paths: {
++            '/api/projects/{project_id}/things/{id}/': {
++                patch: {
++                    operationId: 'things_partial_update',
++                    parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
++                    requestBody: {
++                        content: {
++                            'application/json': { schema: { $ref: '#/components/schemas/PatchedThing' } },
++                        },
++                    },
++                },
++            },
++        },
++        components: {
++            schemas: { PatchedThing: { type: 'object', properties: { name: { type: 'string' } } } },
++        },
++    } as unknown as OpenApiSpec
++    const category = { category: 'Things', feature: 'things', url_prefix: '/things', tools: {} }
++    const resolved = {
++        method: 'PATCH',
++        path: '/api/projects/{project_id}/things/{id}/',
++        operation: spec.paths['/api/projects/{project_id}/things/{id}/']!['patch'],
++    } as unknown as ResolvedOperation
++
++    it('emits a pre-read, the unchanged write, a receipt and a full escape hatch for an update', () => {
++        const config: ToolConfig = {
++            operation: 'things_partial_update',
++            enabled: true,
++            enrich_url: '{id}',
++            response: { receipt: { fields: ['tags'] }, exclude: ['result'] },
++        }
++        const { code, toolUtilsValueImports } = generateToolCode(
++            'thing-update',
++            config,
++            resolved,
++            category,
++            spec,
++            new Set(['Thing', 'PatchedThing']),
++            () => ({ definitions: {} })
++        )
++        expect(code).toContain('.extend({ full: z.boolean().optional()')
++        expect(code).toContain('const before = params.full ? undefined : await readReceiptPreImage(context, ')
++        expect(code.indexOf('const before')).toBeLessThan(code.indexOf("method: 'PATCH'"))
++        expect(code).toContain(
++            "const filtered = (params.full ? omitResponseFields(result, ['result']) : buildWriteReceipt(result, { fields: ['tags'], sent: body, before })) as typeof result"
++        )
++        expect(code).toContain('withPostHogUrl(context, filtered,')
++        expect([...toolUtilsValueImports]).toEqual(['omitResponseFields', 'buildWriteReceipt', 'readReceiptPreImage'])
++    })
++
++    it('plans no diff for creates, actions or soft deletes, and keeps the soft-delete field', () => {
++        const config = (receipt: ToolConfig['response']): ToolConfig => ({
++            operation: 'x',
++            enabled: true,
++            response: receipt,
++        })
++        expect(resolveReceiptPlan(config({ receipt: true }), 'POST', true, undefined)).toEqual({
++            fields: [],
++            diff: false,
++            hasBody: false,
++        })
++        expect(resolveReceiptPlan(config({ receipt: true }), 'PATCH', false, 'archived')).toEqual({
++            fields: ['archived'],
++            diff: false,
++            hasBody: false,
++        })
++        expect(resolveReceiptPlan(config({ receipt: { diff: false } }), 'PATCH', true, undefined)).toEqual({
++            fields: [],
++            diff: false,
++            hasBody: true,
++        })
++        expect(resolveReceiptPlan(config(undefined), 'PATCH', true, undefined)).toBeUndefined()
++    })
++
++    it('rejects a receipt on a list tool', () => {
++        const parsed = ToolConfigSchema.safeParse({
++            operation: 'things_list',
++            enabled: true,
++            list: true,
++            response: { receipt: true },
++        })
++        expect(parsed.success).toBe(false)
++    })
++})
++
++describe('creator trim in the text the model reads', () => {
++    it('shrinks created_by and last_modified_by to id and name at any depth', () => {
++        const trimmed = trimUserRefs({ created_by: USER, tiles: [{ insight: { last_modified_by: USER } }] })
++        expect(trimmed).toEqual({
++            created_by: { id: 1, name: 'Bench Owner' },
++            tiles: [{ insight: { last_modified_by: { id: 1, name: 'Bench Owner' } } }],
++        })
++    })
++
++    it('falls back to the email and leaves other user-shaped keys alone', () => {
++        const noName = { ...USER, first_name: '', last_name: '' }
++        expect(trimUserRefs({ created_by: noName, user: USER })).toEqual({
++            created_by: { id: 1, name: 'bench-owner@example.test' },
++            user: USER,
++        })
++    })
++
++    it('is applied by formatResponse without touching the input', () => {
++        const input = { id: 82, created_by: USER }
++        const text = formatResponse(input)
++        expect(text).toContain('name: Bench Owner')
++        expect(text).not.toContain('distinct_id')
++        expect(input.created_by).toBe(USER)
++    })
++
++    it('cuts the friction-session insight-update echo to a fraction', () => {
++        const before = formatResponse({ ...INSIGHT, tags: ['friction-legacy'] })
++        const receipt = formatResponse(
++            buildWriteReceipt({ ...INSIGHT, tags: ['friction-legacy'] }, { sent: { tags: ['x'] }, before: INSIGHT })
++        )
++        expect(receipt.length * 4).toBeLessThan(before.length)
++    })
++})
+-- 
+2.50.1 (Apple Git-155)
+

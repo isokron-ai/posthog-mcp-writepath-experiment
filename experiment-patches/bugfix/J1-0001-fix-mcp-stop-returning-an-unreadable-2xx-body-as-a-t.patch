@@ -1,0 +1,98 @@
+From f6bd028c49114e287181f8e4189dd2d3df2892e5 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 20:01:41 -0700
+Subject: [PATCH] fix(mcp): stop returning an unreadable 2xx body as a tool
+ result
+
+fetchJson returned any 2xx body as data. An HTML sign-in or challenge
+page from a proxy in front of PostHog, or a JSON body cut short, came back
+as the tool's result: a raw string, or an object with one key per
+character once a handler spread it. On a write the agent read a success
+when nothing may have been written.
+
+A 2xx whose body is sent as JSON or HTML and does not parse is now a
+transport error, which already tells the agent whether a retry is safe.
+Other content types keep the plain-text fallback, and an empty body is
+unchanged.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/api/client.ts             | 19 ++++++++++++
+ services/mcp/tests/unit/api-client.test.ts | 34 ++++++++++++++++++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/services/mcp/src/api/client.ts b/services/mcp/src/api/client.ts
+index 527996d9a71..b840449042a 100644
+--- a/services/mcp/src/api/client.ts
++++ b/services/mcp/src/api/client.ts
+@@ -791,6 +791,25 @@ export class ApiClient {
+                 const rawData = JSON.parse(bodyText)
+                 return { success: true, data: rawData as T }
+             } catch {
++                // A body sent as JSON that does not parse was cut short or altered on the way.
++                // An HTML page is a proxy or sign-in page answering in place of the API. Passing
++                // either on as data would report a call as a success when its outcome is unknown.
++                const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
++                if (contentType.includes('json') || contentType.includes('html')) {
++                    console.error(`[API] Unreadable ${response.status} response on ${method} ${url}: ${contentType}`)
++                    return {
++                        success: false,
++                        error: new PostHogTransportError({
++                            url,
++                            method,
++                            attempts: transportRetries + 1,
++                            retryable: isSafeMethod,
++                            cause: new Error(
++                                `the response had status ${response.status} but its body was not valid JSON (content type ${contentType})`
++                            ),
++                        }),
++                    }
++                }
+                 return { success: true, data: bodyText as T }
+             }
+         }
+diff --git a/services/mcp/tests/unit/api-client.test.ts b/services/mcp/tests/unit/api-client.test.ts
+index 9dd83fd7e3b..da6969ccab6 100644
+--- a/services/mcp/tests/unit/api-client.test.ts
++++ b/services/mcp/tests/unit/api-client.test.ts
+@@ -711,6 +711,40 @@ describe('ApiClient', () => {
+             expect(mockFetch).toHaveBeenCalledTimes(1)
+         })
+ 
++        // A sign-in or challenge page from a proxy, or JSON cut short, used to come back as the
++        // tool's result. On a write that reads as "created" when nothing may have been written.
++        it.each([
++            {
++                label: 'an HTML page',
++                body: '<html><body>Sign in</body></html>',
++                contentType: 'text/html; charset=utf-8',
++            },
++            { label: 'JSON cut short', body: '{"id": 12, "name": "ab', contentType: 'application/json' },
++        ])('reports a 200 that carries $label as a failure, not a result', async ({ body, contentType }) => {
++            const respond = (): Response =>
++                new Response(body, { status: 200, headers: { 'content-type': contentType } })
++            const mockFetch = stubFetch(respond(), respond())
++            const client = new ApiClient({ apiToken: 'phx_test', baseUrl: 'https://us.posthog.com' })
++
++            const write = await settle(client.request({ method: 'POST', path: '/api/projects/17/annotations/' }))
++            const read = await settle(client.request({ method: 'GET', path: '/api/projects/17/annotations/' }))
++
++            expect(write).toBeInstanceOf(PostHogTransportError)
++            expect((write as PostHogTransportError).retryable).toBe(false)
++            expect((write as PostHogTransportError).message).toContain('not valid JSON')
++            expect((write as PostHogTransportError).message).toContain('may have been applied upstream')
++            expect(read).toBeInstanceOf(PostHogTransportError)
++            expect((read as PostHogTransportError).retryable).toBe(true)
++            expect(mockFetch).toHaveBeenCalledTimes(2)
++        })
++
++        it('still returns a plain-text 200 body as text', async () => {
++            stubFetch(new Response('pong', { status: 200, headers: { 'content-type': 'text/plain' } }))
++            const client = new ApiClient({ apiToken: 'phx_test', baseUrl: 'https://us.posthog.com' })
++
++            await expect(client.request({ method: 'GET', path: '/api/projects/17/ping/' })).resolves.toBe('pong')
++        })
++
+         const stubStalledFetch = (): ReturnType<typeof vi.fn> => {
+             const mockFetch = vi.fn(
+                 (_url: string, init?: RequestInit) =>

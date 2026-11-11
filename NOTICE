@@ -1,0 +1,15 @@
+posthog-mcp-writepath-experiment
+
+Based on PostHog/posthog (https://github.com/PostHog/posthog), commit 7b516983bef16b9692a00a6b7780a6b5a802257c:
+the MCP server (services/mcp) and the files needed to build it. Copyright (c) 2020-2026 PostHog Inc. MIT License
+outside the ee/ directory (see LICENSE); nothing from ee/ is included. Third-party components keep their own licenses;
+services/mcp/worker-configuration.d.ts carries the Apache License 2.0 notice of the Cloudflare Workers type
+definitions it was generated from.
+
+The experiment commits on top of 7b516983 (the bug-fix and usability series), the patch series in
+experiment-patches/, the benchmark harness in harness/, the self-hosted setup in selfhost/ and the documentation and
+results are by IsoKron (Stormhaven Enterprises LLC), https://isokron.ai, released under the MIT License. Files in
+selfhost/compose/ reproduce scripts written by PostHog's bin/deploy-hobby at the same commit.
+
+Not affiliated with, sponsored by, or endorsed by PostHog Inc. "PostHog" is a trademark of PostHog Inc., used here
+only to identify the upstream project.

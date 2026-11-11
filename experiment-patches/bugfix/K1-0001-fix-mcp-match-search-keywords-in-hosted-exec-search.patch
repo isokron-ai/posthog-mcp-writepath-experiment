@@ -1,0 +1,74 @@
+From a9f555d3cfe2ef8a944ab4d73ec9f50e6f8414bf Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:53:50 -0700
+Subject: [PATCH] fix(mcp): match search keywords in hosted exec search
+
+A tool's `search_keywords` were copied onto the tool objects built by
+getToolsFromContext and getScopeGatedTools, but not by
+ToolCatalog.getFilteredTools, which builds the tools the hosted server's
+exec search ranks. A keyword such as "alertmanager" could find a tool the
+caller lacks the scope for, but never one it can call.
+
+getFilteredTools now carries the keywords too.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ services/mcp/src/hono/tool-catalog.ts        |  1 +
+ services/mcp/tests/unit/tool-catalog.test.ts | 18 +++++++++++++++++-
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/services/mcp/src/hono/tool-catalog.ts b/services/mcp/src/hono/tool-catalog.ts
+index 6899154723d..b2eed2606f6 100644
+--- a/services/mcp/src/hono/tool-catalog.ts
++++ b/services/mcp/src/hono/tool-catalog.ts
+@@ -228,6 +228,7 @@ export class ToolCatalog {
+                 ...(preBuilt.renderedNote ? { renderedNote: preBuilt.renderedNote } : {}),
+                 title: definition.title,
+                 description: definition.description,
++                searchKeywords: definition.search_keywords,
+                 scopes: definition.required_scopes ?? [],
+                 annotations: definition.annotations,
+             })
+diff --git a/services/mcp/tests/unit/tool-catalog.test.ts b/services/mcp/tests/unit/tool-catalog.test.ts
+index 8d9b2929c7f..114ce67778c 100644
+--- a/services/mcp/tests/unit/tool-catalog.test.ts
++++ b/services/mcp/tests/unit/tool-catalog.test.ts
+@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
+ import { z } from 'zod'
+ 
+ import { ToolCatalog, toMcpInputSchema } from '@/hono/tool-catalog'
++import { searchToolsRanked } from '@/tools/tool-search'
+ import type { ToolBase, ZodObjectAny } from '@/tools/types'
+ 
+ type FakeDefinition = {
+@@ -66,7 +67,11 @@ vi.mock('@/tools/generated', () => ({
+ 
+ const DEFINITIONS: Record<string, FakeDefinition> = {
+     'tool-a': fakeDef({ required_scopes: ['project:read'] }),
+-    'tool-b': fakeDef({ feature: 'insights', annotations: { ...fakeDef().annotations, readOnlyHint: true } }),
++    'tool-b': fakeDef({
++        feature: 'insights',
++        search_keywords: ['prometheus', 'grafana'],
++        annotations: { ...fakeDef().annotations, readOnlyHint: true },
++    }),
+     'gen-tool-c': fakeDef({ required_scopes: ['action:write'] }),
+     'update-feature-flag': fakeDef({ required_scopes: ['feature_flag:write'] }),
+ }
+@@ -248,6 +253,17 @@ describe('ToolCatalog', () => {
+             expect(toolA!.description).toBe('Desc')
+         })
+ 
++        // exec search ranks the tools this method returns, so a keyword the catalog
++        // drops can never match on the hosted server.
++        it('carries search keywords from definitions so exec search can match them', () => {
++            const tools = catalog.getFilteredTools({ scopes: ['*'] })
++            const byName = Object.fromEntries(tools.map((t) => [t.name, t.searchKeywords]))
++
++            expect(byName['tool-b']).toEqual(['prometheus', 'grafana'])
++            expect(byName['tool-a']).toBeUndefined()
++            expect(searchToolsRanked(tools, 'prometheus').map((r) => r.name)).toEqual(['tool-b'])
++        })
++
+         it('should attach scopes and annotations from definitions', () => {
+             const tools = catalog.getFilteredTools({ scopes: ['project:read'] })
+             const toolA = tools.find((t) => t.name === 'tool-a')

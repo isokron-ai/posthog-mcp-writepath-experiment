@@ -1,0 +1,85 @@
+From 25f378139bd9d6d2991608489625220b6f61fcd8 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 14:28:54 -0700
+Subject: [PATCH 16/17] fix(mcp): keep annotation-create's receipt flag out of
+ batch items
+
+Combining the receipts change (group A) with the batch tools (group C):
+annotations-batch-create takes annotation-create's input schema as its
+item, and that schema now carries `full`, the flag that asks the single
+tool for the full API response instead of a write receipt. In a batch it
+means nothing (the batch returns its own per-item receipts), and since
+the item is sent as the request body it would have reached the API as a
+body field.
+
+The item schema now leaves out annotation-create's response-control
+fields, so the batch item is the single tool's input for the annotation
+itself. A test checks the item schema and the request body.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/src/tools/atomic/validation.ts      | 15 ++++++++++-----
+ .../mcp/tests/unit/atomic-batch-tools.test.ts    | 16 ++++++++++++++++
+ 2 files changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/services/mcp/src/tools/atomic/validation.ts b/services/mcp/src/tools/atomic/validation.ts
+index 5290a4f6573..76aa33b128c 100644
+--- a/services/mcp/src/tools/atomic/validation.ts
++++ b/services/mcp/src/tools/atomic/validation.ts
+@@ -71,16 +71,21 @@ export function validateInsightQuery(query: unknown, prefix: string[] = ['query'
+     return parsed.success ? undefined : formatIssues(parsed.error, prefix)
+ }
+ 
+-let annotationItemSchema: ZodObjectAny | undefined
++let annotationItemSchema: z.ZodObject | undefined
+ 
+-/** The input schema of annotation-create: the batch item is the single tool's input, unchanged. */
+-export function getAnnotationCreateSchema(): ZodObjectAny {
++/**
++ * The input schema of annotation-create, less `full`: the batch item is the single tool's input for
++ * the annotation itself. `full` shapes the single tool's response (the full API response instead of
++ * the short write receipt); a batch returns its own per-item receipts, and the item is sent as the
++ * request body, so the flag must not be part of it.
++ */
++export function getAnnotationCreateSchema(): z.ZodObject {
+     if (!annotationItemSchema) {
+-        const schema = GENERATED_TOOL_MAP['annotation-create']?.().schema as ZodObjectAny | undefined
++        const schema = GENERATED_TOOL_MAP['annotation-create']?.().schema as z.ZodObject | undefined
+         if (!schema) {
+             throw new Error('annotation-create is not registered')
+         }
+-        annotationItemSchema = schema
++        annotationItemSchema = 'full' in schema.shape ? schema.omit({ full: true }) : schema
+     }
+     return annotationItemSchema
+ }
+diff --git a/services/mcp/tests/unit/atomic-batch-tools.test.ts b/services/mcp/tests/unit/atomic-batch-tools.test.ts
+index d6f930dd483..06bd739df80 100644
+--- a/services/mcp/tests/unit/atomic-batch-tools.test.ts
++++ b/services/mcp/tests/unit/atomic-batch-tools.test.ts
+@@ -219,6 +219,22 @@ describe('annotations-batch-create', () => {
+         expect(fake.collection('annotations').size).toBe(8)
+     })
+ 
++    it("keeps annotation-create's receipt flag out of the items and out of the request body", async () => {
++        // annotation-create takes `full` (full response instead of the write receipt); a batch
++        // returns its own per-item receipts, so the item schema leaves the flag out.
++        const itemSchema = AnnotationsBatchCreateSchema.shape.items.element
++        expect(Object.keys(itemSchema.shape)).not.toContain('full')
++        const fake = new FakePostHog()
++        await annotationsBatchCreate(
++            fake.context(),
++            parse(AnnotationsBatchCreateSchema, { items: [{ ...items[0], full: true }] })
++        )
++        const posts = fake.log.filter((entry) => entry.method === 'POST' && entry.path.endsWith('/annotations/'))
++        expect(posts).toHaveLength(1)
++        expect(posts[0]!.body).not.toHaveProperty('full')
++        expect(posts[0]!.body).toMatchObject({ content: 'release note 0' })
++    })
++
+     it('refuses two identical items in one batch, and the schema rejects a bad date', async () => {
+         const fake = new FakePostHog()
+         const result = await annotationsBatchCreate(
+-- 
+2.50.1 (Apple Git-155)
+

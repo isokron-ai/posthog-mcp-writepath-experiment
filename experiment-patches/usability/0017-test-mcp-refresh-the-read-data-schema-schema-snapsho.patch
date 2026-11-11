@@ -1,0 +1,33 @@
+From f66c0f093934c5654d0798bfbf4ed400f874bb6c Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 14:28:55 -0700
+Subject: [PATCH 17/17] test(mcp): refresh the read-data-schema schema snapshot
+ for include_unseen
+
+The seen-events-only change added the optional `include_unseen` flag to
+read-data-schema's events query but left its runtime schema snapshot as
+it was; the snapshot test now records it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../unit/__snapshots__/tool-schemas/read-data-schema.json     | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/read-data-schema.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/read-data-schema.json
+index ebf42284ddd..f9a683ec609 100644
+--- a/services/mcp/tests/unit/__snapshots__/tool-schemas/read-data-schema.json
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/read-data-schema.json
+@@ -7,6 +7,10 @@
+                 {
+                     "additionalProperties": false,
+                     "properties": {
++                        "include_unseen": {
++                            "description": "Also list events that are defined but were not seen in the last 30 days. By default they are left out and only counted.",
++                            "type": "boolean"
++                        },
+                         "kind": {
+                             "const": "events",
+                             "type": "string"
+-- 
+2.50.1 (Apple Git-155)
+

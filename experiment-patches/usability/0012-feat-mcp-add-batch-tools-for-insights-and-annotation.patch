@@ -1,0 +1,2381 @@
+From c624374a00800e92245277aa56f0569fb8b8a19e Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 14:00:11 -0700
+Subject: [PATCH 12/17] feat(mcp): add batch tools for insights and annotations
+
+Add insights-batch-update, annotations-batch-create and
+annotations-batch-delete as hand-written tools under src/tools/atomic/.
+Job 3 of the 2026-11-10 friction session (tag 10 insights, archive 5,
+add 8 annotations) took 25 calls; job 10's annotation and insight
+cleanup took 23. Each is now one call per object type.
+
+The shared engine (batch.ts) gives every batch the same contract:
+- every item is validated first (input, the object exists, what would
+  change); if any item fails, nothing is written and each item says why
+- writes then run best-effort, four at a time, through ApiClient (which
+  keeps its 429 / Retry-After handling); a failed write is reported on
+  its item and the others are kept
+- one result per item (ok, unchanged, error, conflict, skipped,
+  not_attempted, exists, not_found) with a one-line `changed` receipt,
+  and a summary that says atomic: false
+- dry_run validates and reports without writing; stop_on_error starts
+  no new writes after the first failure; at most 50 items per call
+
+insights-batch-update edits name, description, favorited and tags, or
+soft-deletes (insights have no archive state). add_tags/remove_tags are
+a read-merge-write, so those items go through the version guard
+(versionGuard.ts): the insight is re-read just before the write and an
+item whose insight changed since validation reports `conflict` and is
+not written.
+
+annotations-batch-create validates each item with annotation-create's
+own schema and is retry-safe: an item matching a live annotation
+(content, date_marker, scope) is reported `exists` instead of being
+created twice. annotations-batch-delete soft-deletes and reports a
+missing id as not_found without blocking the rest.
+
+Tests use an in-memory fake of the REST endpoints with jittered latency.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/tool-definitions-all.json |  58 ++++
+ services/mcp/schema/tool-definitions.json     |  58 ++++
+ .../mcp/src/tools/atomic/annotationsBatch.ts  | 231 ++++++++++++++
+ services/mcp/src/tools/atomic/batch.ts        | 207 +++++++++++++
+ services/mcp/src/tools/atomic/concurrency.ts  |  67 +++++
+ services/mcp/src/tools/atomic/errors.ts       |  68 +++++
+ services/mcp/src/tools/atomic/index.ts        |  17 ++
+ .../src/tools/atomic/insightsBatchUpdate.ts   | 200 +++++++++++++
+ services/mcp/src/tools/atomic/resources.ts    | 118 ++++++++
+ services/mcp/src/tools/atomic/validation.ts   |  98 ++++++
+ services/mcp/src/tools/atomic/versionGuard.ts | 168 +++++++++++
+ services/mcp/src/tools/index.ts               |   5 +
+ .../tests/fixtures/fake-posthog-backend.ts    | 253 ++++++++++++++++
+ .../annotations-batch-create.json             | 106 +++++++
+ .../annotations-batch-delete.json             |  26 ++
+ .../tool-schemas/insights-batch-update.json   | 103 +++++++
+ .../mcp/tests/unit/atomic-batch-tools.test.ts | 283 ++++++++++++++++++
+ .../mcp/tests/unit/atomic-concurrency.test.ts |  57 ++++
+ .../unit/atomic-tools-registration.test.ts    |  36 +++
+ 19 files changed, 2159 insertions(+)
+ create mode 100644 services/mcp/src/tools/atomic/annotationsBatch.ts
+ create mode 100644 services/mcp/src/tools/atomic/batch.ts
+ create mode 100644 services/mcp/src/tools/atomic/concurrency.ts
+ create mode 100644 services/mcp/src/tools/atomic/errors.ts
+ create mode 100644 services/mcp/src/tools/atomic/index.ts
+ create mode 100644 services/mcp/src/tools/atomic/insightsBatchUpdate.ts
+ create mode 100644 services/mcp/src/tools/atomic/resources.ts
+ create mode 100644 services/mcp/src/tools/atomic/validation.ts
+ create mode 100644 services/mcp/src/tools/atomic/versionGuard.ts
+ create mode 100644 services/mcp/tests/fixtures/fake-posthog-backend.ts
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-create.json
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-delete.json
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/insights-batch-update.json
+ create mode 100644 services/mcp/tests/unit/atomic-batch-tools.test.ts
+ create mode 100644 services/mcp/tests/unit/atomic-concurrency.test.ts
+ create mode 100644 services/mcp/tests/unit/atomic-tools-registration.test.ts
+
+diff --git a/services/mcp/schema/tool-definitions-all.json b/services/mcp/schema/tool-definitions-all.json
+index 6b632eb0b07..e2ed8c5cde0 100644
+--- a/services/mcp/schema/tool-definitions-all.json
++++ b/services/mcp/schema/tool-definitions-all.json
+@@ -1147,6 +1147,44 @@
+             "readOnlyHint": true
+         }
+     },
++    "annotations-batch-create": {
++        "description": "Create many annotations in one call. Each item has the same fields as annotation-create (content, date_marker, optional scope, dashboard_item, dashboard_id, emoji). Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. Retry-safe: with `skip_duplicates` (default true) an item whose content, date_marker and scope match a live annotation is reported `exists` with its id instead of being created again.",
++        "category": "Annotations",
++        "feature": "annotations",
++        "summary": "Create many annotations in one call, with per-item results.",
++        "title": "Batch create annotations",
++        "required_scopes": ["annotation:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/annotations/",
++            "POST /api/projects/{project_id}/annotations/"
++        ],
++        "search_keywords": ["bulk", "annotations", "batch", "release notes"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": false,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
++    "annotations-batch-delete": {
++        "description": "Soft-delete many annotations by id in one call, as annotation-delete does. Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. An id that does not exist or is already deleted is reported `not_found` and does not block the others.",
++        "category": "Annotations",
++        "feature": "annotations",
++        "summary": "Soft-delete many annotations in one call, with per-item results.",
++        "title": "Batch delete annotations",
++        "required_scopes": ["annotation:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/annotations/{id}/",
++            "PATCH /api/projects/{project_id}/annotations/{id}/"
++        ],
++        "search_keywords": ["bulk", "annotations", "batch", "cleanup"],
++        "annotations": {
++            "destructiveHint": true,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
+     "annotations-list": {
+         "description": "List annotations in the current project, newest first. Use this to review existing deployment markers and analysis notes before adding new annotations. Results are paginated (default 100 per page) — use `limit` and `offset` to page through, and `search` to filter by annotation content. Each row's `created_by` is trimmed to `{id, email}`.",
+         "category": "Annotations",
+@@ -8958,6 +8996,26 @@
+             "readOnlyHint": true
+         }
+     },
++    "insights-batch-update": {
++        "description": "Change many insights in one call: name, description, favorited, tags (`tags` replaces them; `add_tags`/`remove_tags` edit them in place) or soft-delete (`deleted: true`, the same as insight-delete; insights have no separate archive). Each item takes an insight id or short_id. Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. add_tags/remove_tags items are version-checked: if the insight changed after validation, that item reports `conflict` and is not written.",
++        "category": "Product analytics",
++        "feature": "product_analytics",
++        "summary": "Update or soft-delete many insights in one call, with per-item results.",
++        "title": "Batch update insights",
++        "required_scopes": ["insight:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/{id}/",
++            "PATCH /api/projects/{project_id}/insights/{id}/"
++        ],
++        "search_keywords": ["bulk", "tag insights", "archive insights", "delete insights", "batch"],
++        "annotations": {
++            "destructiveHint": true,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
+     "insights-list": {
+         "description": "List saved insights in the project with optional filtering by favorited status or search term. Returns metadata only (name, description, tags, dashboards, ownership) — NOT the query results. To retrieve the actual data for any insight in the list, call the insight-query tool with its `short_id` or numeric `id`.",
+         "category": "Product analytics",
+diff --git a/services/mcp/schema/tool-definitions.json b/services/mcp/schema/tool-definitions.json
+index 5ca6804685f..213f883bab4 100644
+--- a/services/mcp/schema/tool-definitions.json
++++ b/services/mcp/schema/tool-definitions.json
+@@ -864,5 +864,63 @@
+             "openWorldHint": true,
+             "readOnlyHint": false
+         }
++    },
++    "insights-batch-update": {
++        "description": "Change many insights in one call: name, description, favorited, tags (`tags` replaces them; `add_tags`/`remove_tags` edit them in place) or soft-delete (`deleted: true`, the same as insight-delete; insights have no separate archive). Each item takes an insight id or short_id. Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. add_tags/remove_tags items are version-checked: if the insight changed after validation, that item reports `conflict` and is not written.",
++        "category": "Product analytics",
++        "feature": "product_analytics",
++        "summary": "Update or soft-delete many insights in one call, with per-item results.",
++        "title": "Batch update insights",
++        "required_scopes": ["insight:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/{id}/",
++            "PATCH /api/projects/{project_id}/insights/{id}/"
++        ],
++        "search_keywords": ["bulk", "tag insights", "archive insights", "delete insights", "batch"],
++        "annotations": {
++            "destructiveHint": true,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
++    "annotations-batch-create": {
++        "description": "Create many annotations in one call. Each item has the same fields as annotation-create (content, date_marker, optional scope, dashboard_item, dashboard_id, emoji). Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. Retry-safe: with `skip_duplicates` (default true) an item whose content, date_marker and scope match a live annotation is reported `exists` with its id instead of being created again.",
++        "category": "Annotations",
++        "feature": "annotations",
++        "summary": "Create many annotations in one call, with per-item results.",
++        "title": "Batch create annotations",
++        "required_scopes": ["annotation:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/annotations/",
++            "POST /api/projects/{project_id}/annotations/"
++        ],
++        "search_keywords": ["bulk", "annotations", "batch", "release notes"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": false,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
++    "annotations-batch-delete": {
++        "description": "Soft-delete many annotations by id in one call, as annotation-delete does. Best-effort, NOT all-or-nothing: every item is validated first, and if any item fails validation nothing is written; after that, writes run a few at a time and a write that fails is reported on its item while the others are kept. Returns one result per item (status ok/unchanged/error/conflict/skipped, with `changed: {field: [old, new]}` or the error) and a summary. `dry_run: true` validates every item and reports what would change without writing. `stop_on_error: true` starts no further writes after the first failure. At most 50 items per call. An id that does not exist or is already deleted is reported `not_found` and does not block the others.",
++        "category": "Annotations",
++        "feature": "annotations",
++        "summary": "Soft-delete many annotations in one call, with per-item results.",
++        "title": "Batch delete annotations",
++        "required_scopes": ["annotation:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/annotations/{id}/",
++            "PATCH /api/projects/{project_id}/annotations/{id}/"
++        ],
++        "search_keywords": ["bulk", "annotations", "batch", "cleanup"],
++        "annotations": {
++            "destructiveHint": true,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
+     }
+ }
+diff --git a/services/mcp/src/tools/atomic/annotationsBatch.ts b/services/mcp/src/tools/atomic/annotationsBatch.ts
+new file mode 100644
+index 00000000000..b362f4d1840
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/annotationsBatch.ts
+@@ -0,0 +1,231 @@
++/**
++ * annotations-batch-create and annotations-batch-delete. See batch.ts for the semantics.
++ *
++ * Each create item is exactly annotation-create's input, validated by the same schema. Two items
++ * with the same content, date_marker and scope in one batch are refused unless skip_duplicates is off.
++ *
++ * Retrying a batch create is safe by default: with `skip_duplicates` (on unless turned off), an item
++ * whose content, date_marker and scope match a live annotation is reported `exists` with that
++ * annotation's id instead of being created twice. That makes a retry after a timeout or a partial
++ * failure idempotent, which a best-effort batch needs.
++ *
++ * Deletes are soft deletes, as annotation-delete does. An id that does not exist (or is already
++ * deleted) is reported `not_found` and does not block the rest: the end state the caller asked for
++ * already holds for it.
++ */
++import { z } from 'zod'
++
++import { canonicalJson } from '@/lib/plain-object'
++import type { Context, ToolBase } from '@/tools/types'
++
++import { MAX_BATCH_ITEMS, runBatch, type BatchResult, type ItemResult } from './batch'
++import { isNotFound } from './errors'
++import { type ApiObject, projectPath } from './resources'
++import { getAnnotationCreateSchema } from './validation'
++
++const preview = (content: unknown): string | null => {
++    if (typeof content !== 'string') {
++        return null
++    }
++    return content.length > 60 ? `${content.slice(0, 57)}...` : content
++}
++
++export const AnnotationsBatchCreateSchema = z.object({
++    items: z
++        .array(getAnnotationCreateSchema().describe('One annotation, with the same fields as annotation-create.'))
++        .min(1)
++        .max(MAX_BATCH_ITEMS)
++        .describe(`The annotations to create, at most ${MAX_BATCH_ITEMS} per call.`),
++    skip_duplicates: z
++        .boolean()
++        .optional()
++        .describe(
++            'Default true. Report an item whose content, date_marker and scope match a live annotation as `exists` instead of creating it again, so a retried batch does not duplicate.'
++        ),
++    dry_run: z.boolean().optional().describe('Validate every item and report what would be created, without writing.'),
++    stop_on_error: z
++        .boolean()
++        .optional()
++        .describe('Start no further creates after the first failed one. The rest are reported as skipped.'),
++})
++
++const sameInstant = (a: unknown, b: unknown): boolean =>
++    typeof a === 'string' && typeof b === 'string' && Date.parse(a) === Date.parse(b)
++
++async function findDuplicate(context: Context, projectId: string, item: ApiObject): Promise<ApiObject | undefined> {
++    if (typeof item.content !== 'string' || item.content.length === 0) {
++        return undefined
++    }
++    const page = await context.api.request<{ results?: ApiObject[] }>({
++        method: 'GET',
++        path: projectPath(projectId, 'annotations/'),
++        query: { search: item.content, limit: 100 },
++    })
++    const scope = item.scope ?? 'project'
++    return page.results?.find(
++        (row) =>
++            row.deleted !== true &&
++            row.content === item.content &&
++            sameInstant(row.date_marker, item.date_marker) &&
++            (row.scope ?? 'project') === scope &&
++            (row.dashboard_item ?? null) === (item.dashboard_item ?? null) &&
++            (row.dashboard_id ?? null) === (item.dashboard_id ?? null)
++    )
++}
++
++const createReceipt = (index: number, annotation: ApiObject, status: ItemResult['status']): ItemResult => ({
++    index,
++    status,
++    ...(annotation.id !== undefined ? { id: annotation.id as number } : {}),
++    content: preview(annotation.content),
++    date_marker: (annotation.date_marker as string | null | undefined) ?? null,
++    scope: (annotation.scope as string | undefined) ?? 'project',
++})
++
++export async function annotationsBatchCreate(
++    context: Context,
++    params: z.infer<typeof AnnotationsBatchCreateSchema>
++): Promise<BatchResult> {
++    const projectId = await context.stateManager.getProjectId()
++    const skipDuplicates = params.skip_duplicates ?? true
++    const seen = new Map<string, number>()
++    return await runBatch<ApiObject, ApiObject>({
++        items: params.items,
++        dryRun: params.dry_run ?? false,
++        stopOnError: params.stop_on_error ?? false,
++        prepare: async (raw, index) => {
++            const item = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== undefined))
++            if (!item.content || !item.date_marker) {
++                return {
++                    valid: false,
++                    result: { index, status: 'error', error: 'content and date_marker are required' },
++                }
++            }
++            const key = canonicalJson([
++                item.content,
++                Date.parse(String(item.date_marker)),
++                item.scope ?? 'project',
++                item.dashboard_item ?? null,
++                item.dashboard_id ?? null,
++            ])
++            const first = seen.get(key)
++            if (skipDuplicates && first !== undefined && first !== index) {
++                return {
++                    valid: false,
++                    result: { index, status: 'error', error: `same content, date_marker and scope as item ${first}` },
++                }
++            }
++            seen.set(key, first ?? index)
++            const existing = skipDuplicates ? await findDuplicate(context, projectId, item) : undefined
++            if (existing) {
++                return {
++                    valid: true,
++                    prepared: item,
++                    preview: createReceipt(index, existing, 'exists'),
++                    skipWrite: true,
++                }
++            }
++            return { valid: true, prepared: item, preview: createReceipt(index, item, 'would_change') }
++        },
++        execute: async (item, index) => {
++            const created = await context.api.request<ApiObject>({
++                method: 'POST',
++                path: projectPath(projectId, 'annotations/'),
++                body: item,
++            })
++            return createReceipt(index, created, 'ok')
++        },
++    })
++}
++
++export const AnnotationsBatchDeleteSchema = z.object({
++    ids: z
++        .array(z.number().int())
++        .min(1)
++        .max(MAX_BATCH_ITEMS)
++        .describe(`Ids of the annotations to soft-delete, at most ${MAX_BATCH_ITEMS} per call.`),
++    dry_run: z
++        .boolean()
++        .optional()
++        .describe('Check that every annotation exists and report what would be deleted, without deleting.'),
++    stop_on_error: z
++        .boolean()
++        .optional()
++        .describe('Start no further deletes after the first failed one. The rest are reported as skipped.'),
++})
++
++export async function annotationsBatchDelete(
++    context: Context,
++    params: z.infer<typeof AnnotationsBatchDeleteSchema>
++): Promise<BatchResult> {
++    const projectId = await context.stateManager.getProjectId()
++    const dryRun = params.dry_run ?? false
++    const ids = [...new Set(params.ids)]
++    const path = (id: number): string => projectPath(projectId, `annotations/${encodeURIComponent(String(id))}/`)
++    const gone = (index: number, id: number): ItemResult => ({
++        index,
++        id,
++        status: 'not_found',
++        error: 'No live annotation with this id (it may already be deleted).',
++    })
++    return await runBatch<number, number>({
++        items: ids,
++        dryRun,
++        stopOnError: params.stop_on_error ?? false,
++        prepare: async (id, index) => {
++            // A real delete needs no read first: the PATCH itself answers 404 for a missing id.
++            if (!dryRun) {
++                return { valid: true, prepared: id, preview: { index, id, status: 'would_change' } }
++            }
++            try {
++                const annotation = await context.api.request<ApiObject>({ method: 'GET', path: path(id) })
++                if (annotation.deleted === true) {
++                    return { valid: true, prepared: id, preview: gone(index, id), skipWrite: true }
++                }
++                return {
++                    valid: true,
++                    prepared: id,
++                    preview: { index, id, status: 'would_change', content: preview(annotation.content) },
++                }
++            } catch (error) {
++                if (isNotFound(error)) {
++                    return { valid: true, prepared: id, preview: gone(index, id), skipWrite: true }
++                }
++                throw error
++            }
++        },
++        execute: async (id, index) => {
++            try {
++                const deleted = await context.api.request<ApiObject>({
++                    method: 'PATCH',
++                    path: path(id),
++                    body: { deleted: true },
++                })
++                return {
++                    index,
++                    id,
++                    status: 'ok',
++                    content: preview(deleted.content),
++                    changed: { deleted: [false, true] },
++                }
++            } catch (error) {
++                if (isNotFound(error)) {
++                    return gone(index, id)
++                }
++                throw error
++            }
++        },
++    })
++}
++
++export const annotationsBatchCreateTool = (): ToolBase<typeof AnnotationsBatchCreateSchema, BatchResult> => ({
++    name: 'annotations-batch-create',
++    schema: AnnotationsBatchCreateSchema,
++    handler: annotationsBatchCreate,
++})
++
++export const annotationsBatchDeleteTool = (): ToolBase<typeof AnnotationsBatchDeleteSchema, BatchResult> => ({
++    name: 'annotations-batch-delete',
++    schema: AnnotationsBatchDeleteSchema,
++    handler: annotationsBatchDelete,
++})
+diff --git a/services/mcp/src/tools/atomic/batch.ts b/services/mcp/src/tools/atomic/batch.ts
+new file mode 100644
+index 00000000000..c1c690968d7
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/batch.ts
+@@ -0,0 +1,207 @@
++import { mapWithConcurrency } from './concurrency'
++/**
++ * Batch engine: validate every item, then write best-effort with a result per item.
++ *
++ * A batch over separate REST calls cannot be all-or-nothing: item 7's write can fail after items
++ * 1 to 6 are saved, and nothing rolls those back. So the engine makes two promises instead:
++ *
++ *   1. Validation before writes. Every item is checked first (input, the object exists, what would
++ *      change). If any item fails that check, nothing is written and every item says why it was
++ *      or was not attempted. A typo in item 7 never leaves items 1 to 6 half-applied.
++ *   2. Per-item results. Writes then run best-effort, a few at a time. Each item reports `ok` with
++ *      what changed, `unchanged`, or `error`/`conflict` with the reason, and the summary counts
++ *      them. With `stop_on_error`, no new writes start after the first failure; the rest are
++ *      reported `skipped`.
++ *
++ * `dry_run` runs step 1 only and reports what each item would do.
++ */
++import { WriteConflictError, errorMessage } from './errors'
++
++/** Most items one call may carry. Bigger jobs are split by the agent into several calls. */
++export const MAX_BATCH_ITEMS = 50
++
++/** Requests in flight at once. Rate limiting (429 + Retry-After) stays with ApiClient. */
++export const BATCH_CONCURRENCY = 4
++
++export const BATCH_SEMANTICS =
++    'Best-effort, not all-or-nothing: every item was validated before any write; writes that fail are reported per item and the others are kept.'
++
++export type ItemStatus =
++    | 'ok'
++    | 'unchanged'
++    | 'would_change'
++    | 'error'
++    | 'conflict'
++    | 'skipped'
++    | 'not_attempted'
++    | 'exists'
++    | 'not_found'
++
++export interface ItemResult {
++    index: number
++    status: ItemStatus
++    id?: string | number
++    /** Field-level receipt: `{field: [before, after]}`. */
++    changed?: Record<string, [unknown, unknown]>
++    error?: string
++    warning?: string
++    [extra: string]: unknown
++}
++
++export interface BatchSummary {
++    requested: number
++    ok: number
++    unchanged: number
++    failed: number
++    skipped: number
++    written: number
++    dry_run: boolean
++    atomic: false
++    semantics: string
++    aborted?: string
++}
++
++/**
++ * What the agent receives per item. `changed` is one short line, `field: old → new; ...`, so that a
++ * batch of uniform items prints as one table row each instead of a nested block per item.
++ */
++export type ItemReceipt = Omit<ItemResult, 'changed'> & { changed?: string }
++
++export interface BatchResult {
++    summary: BatchSummary
++    items: ItemReceipt[]
++}
++
++export type Prepared<P> =
++    | { valid: true; prepared: P; preview: ItemResult; skipWrite?: boolean }
++    | { valid: false; result: ItemResult }
++
++export interface BatchSpec<I, P> {
++    items: readonly I[]
++    dryRun: boolean
++    stopOnError: boolean
++    /** Validation phase: reads only. Returns the prepared write and a preview of the result. */
++    prepare: (item: I, index: number) => Promise<Prepared<P>>
++    /** Write phase. Throw to report the item as failed; the batch goes on. */
++    execute: (prepared: P, index: number) => Promise<ItemResult>
++}
++
++const FAILED: ItemStatus[] = ['error', 'conflict']
++
++export function summarize(items: ItemResult[], dryRun: boolean, written: number, aborted?: string): BatchSummary {
++    const count = (statuses: ItemStatus[]): number => items.filter((item) => statuses.includes(item.status)).length
++    return {
++        requested: items.length,
++        ok: count(['ok', 'would_change']),
++        unchanged: count(['unchanged', 'exists', 'not_found']),
++        failed: count(FAILED),
++        skipped: count(['skipped', 'not_attempted']),
++        written,
++        dry_run: dryRun,
++        atomic: false,
++        semantics: BATCH_SEMANTICS,
++        ...(aborted ? { aborted } : {}),
++    }
++}
++
++export async function runBatch<I, P>(spec: BatchSpec<I, P>): Promise<BatchResult> {
++    const prepared = (await mapWithConcurrency(spec.items, BATCH_CONCURRENCY, async (item, index) => {
++        try {
++            return await spec.prepare(item, index)
++        } catch (error) {
++            return { valid: false, result: { index, status: 'error', error: errorMessage(error) } } as Prepared<P>
++        }
++    })) as Prepared<P>[]
++
++    const invalid = prepared.filter((entry) => !entry.valid)
++    if (invalid.length > 0) {
++        const items = prepared.map((entry, index): ItemResult => {
++            if (!entry.valid) {
++                return entry.result
++            }
++            return { ...entry.preview, index, status: 'not_attempted' }
++        })
++        return {
++            summary: summarize(
++                items,
++                spec.dryRun,
++                0,
++                `${invalid.length} item(s) failed validation, so nothing was written. Fix them and send the batch again.`
++            ),
++            items: items.map(toReceipt),
++        }
++    }
++
++    if (spec.dryRun) {
++        const items = prepared.map((entry) => (entry.valid ? entry.preview : entry.result))
++        return { summary: summarize(items, true, 0), items: items.map(toReceipt) }
++    }
++
++    let failed = false
++    let written = 0
++    const outcomes = await mapWithConcurrency(
++        prepared,
++        BATCH_CONCURRENCY,
++        async (entry, index): Promise<ItemResult> => {
++            if (!entry.valid) {
++                return entry.result
++            }
++            if (entry.skipWrite) {
++                return entry.preview
++            }
++            try {
++                const result = await spec.execute(entry.prepared, index)
++                if (result.status === 'ok') {
++                    written++
++                }
++                return result
++            } catch (error) {
++                failed = true
++                return {
++                    ...entry.preview,
++                    index,
++                    status: error instanceof WriteConflictError ? 'conflict' : 'error',
++                    changed: undefined,
++                    error: errorMessage(error),
++                }
++            }
++        },
++        () => spec.stopOnError && failed
++    )
++    const items = outcomes.map((outcome, index): ItemResult => {
++        if (outcome) {
++            return outcome
++        }
++        const entry = prepared[index]!
++        const preview = entry.valid ? entry.preview : entry.result
++        return {
++            ...preview,
++            index,
++            status: 'skipped',
++            changed: undefined,
++            error: 'Not started: an earlier write failed and stop_on_error is set.',
++        }
++    })
++    return { summary: summarize(items, false, written), items: items.map(toReceipt) }
++}
++
++function short(value: unknown): string {
++    const text = JSON.stringify(value ?? null)
++    return text.length > 80 ? `${text.slice(0, 77)}...` : text
++}
++
++/** `tags: [] → ["legacy"]; deleted: false → true` */
++export function describeChanges(changed: Record<string, [unknown, unknown]>): string {
++    return Object.entries(changed)
++        .map(([field, [before, after]]) => `${field}: ${short(before)} → ${short(after)}`)
++        .join('; ')
++}
++
++function toReceipt(item: ItemResult): ItemReceipt {
++    const { changed, ...rest } = item
++    const receipt = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined)) as ItemReceipt
++    if (changed && Object.keys(changed).length > 0) {
++        receipt.changed = describeChanges(changed)
++    }
++    return receipt
++}
+diff --git a/services/mcp/src/tools/atomic/concurrency.ts b/services/mcp/src/tools/atomic/concurrency.ts
+new file mode 100644
+index 00000000000..f53a90e20cf
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/concurrency.ts
+@@ -0,0 +1,67 @@
++/**
++ * Concurrency primitives for the atomic-write and batch tools.
++ *
++ * - `KeyedMutex` serializes work on one key (one object) inside this server process. Two partial
++ *   updates of the same insight sent through this process therefore run one after the other, and
++ *   the second reads the first one's result. It does not reach other processes or the PostHog UI;
++ *   the version check in versionGuard.ts covers those.
++ * - `mapWithConcurrency` fans work out with a fixed number of requests in flight, so a batch does
++ *   not burst the API. Rate limiting itself stays with ApiClient, which retries a 429 after the
++ *   API's Retry-After.
++ */
++
++export class KeyedMutex {
++    private readonly tails = new Map<string, Promise<void>>()
++
++    /** Runs `task` once every earlier task on `key` has settled. Different keys run in parallel. */
++    async runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
++        const previous = this.tails.get(key) ?? Promise.resolve()
++        let release!: () => void
++        const current = new Promise<void>((resolve) => {
++            release = resolve
++        })
++        const tail = previous.then(() => current)
++        this.tails.set(key, tail)
++        await previous
++        try {
++            return await task()
++        } finally {
++            release()
++            // Drop the entry once nothing is queued behind this task, so the map does not grow.
++            if (this.tails.get(key) === tail) {
++                this.tails.delete(key)
++            }
++        }
++    }
++
++    /** Number of keys with a task running or queued. For tests. */
++    get size(): number {
++        return this.tails.size
++    }
++}
++
++/** One mutex per server process, shared by every tool that does a read-merge-write. */
++export const objectLocks = new KeyedMutex()
++
++/**
++ * Maps `items` through `worker` with at most `limit` calls in flight, keeping input order in the
++ * output. `shouldStop` is checked before each new item starts; once it returns true, the remaining
++ * items are not started and come back as `undefined`.
++ */
++export async function mapWithConcurrency<T, R>(
++    items: readonly T[],
++    limit: number,
++    worker: (item: T, index: number) => Promise<R>,
++    shouldStop: () => boolean = () => false
++): Promise<(R | undefined)[]> {
++    const results: (R | undefined)[] = new Array(items.length).fill(undefined)
++    let next = 0
++    const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
++        while (next < items.length && !shouldStop()) {
++            const index = next++
++            results[index] = await worker(items[index]!, index)
++        }
++    })
++    await Promise.all(lanes)
++    return results
++}
+diff --git a/services/mcp/src/tools/atomic/errors.ts b/services/mcp/src/tools/atomic/errors.ts
+new file mode 100644
+index 00000000000..d676b527150
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/errors.ts
+@@ -0,0 +1,68 @@
++/**
++ * Errors for the atomic-write and batch tools.
++ *
++ * Both classes extend PostHogApiError so handleToolError returns their message to the agent as is.
++ * A 4xx status keeps them out of exception capture: a conflict or a refused write is an expected
++ * outcome the agent recovers from, not a server bug.
++ */
++import { PostHogApiError, PostHogValidationError } from '@/lib/errors'
++
++/**
++ * The object changed between the read and the write, so nothing was written. The agent should
++ * read the object again and retry against the new version.
++ */
++export class WriteConflictError extends PostHogApiError {
++    constructor(
++        message: string,
++        public readonly details: { kind: string; id: string | number; before?: unknown; now?: unknown }
++    ) {
++        super({
++            status: 409,
++            statusText: 'Conflict',
++            body: '',
++            url: '',
++            method: 'PATCH',
++            message,
++        })
++        this.name = 'WriteConflictError'
++    }
++}
++
++/**
++ * A multi-step write failed part-way. The message says which step failed, what was rolled back,
++ * and anything left behind. The status is the failed step's own status (500 when it had none).
++ */
++export class AtomicWriteError extends PostHogApiError {
++    constructor(message: string, cause: unknown) {
++        super({
++            status: errorStatus(cause) ?? 500,
++            statusText: 'Atomic write failed',
++            body: '',
++            url: '',
++            method: 'POST',
++            message,
++        })
++        this.name = 'AtomicWriteError'
++    }
++}
++
++export function errorStatus(error: unknown): number | undefined {
++    if (error instanceof PostHogApiError) {
++        return error.status
++    }
++    if (error instanceof PostHogValidationError) {
++        return 400
++    }
++    return undefined
++}
++
++/** One line for a per-item result or a rollback report. */
++export function errorMessage(error: unknown): string {
++    const text = error instanceof Error ? error.message : String(error)
++    return text.length > 500 ? `${text.slice(0, 500)}…` : text
++}
++
++/** True when the API said the object does not exist (or is soft-deleted, which reads as 404). */
++export function isNotFound(error: unknown): boolean {
++    return error instanceof PostHogApiError && error.status === 404
++}
+diff --git a/services/mcp/src/tools/atomic/index.ts b/services/mcp/src/tools/atomic/index.ts
+new file mode 100644
+index 00000000000..26985928c6a
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/index.ts
+@@ -0,0 +1,17 @@
++/**
++ * Atomic-write and batch tools. The patterns they share are written up in
++ * services/mcp/docs/atomic-and-batch-tools.md:
++ *
++ * - batch.ts: validate every item, then write best-effort with a result per item (and dry_run)
++ * - versionGuard.ts: version-checked read-merge-write for partial updates
++ */
++import type { ToolBase, ZodObjectAny } from '@/tools/types'
++
++import { annotationsBatchCreateTool, annotationsBatchDeleteTool } from './annotationsBatch'
++import insightsBatchUpdate from './insightsBatchUpdate'
++
++export const ATOMIC_TOOLS: Record<string, () => ToolBase<ZodObjectAny>> = {
++    'insights-batch-update': insightsBatchUpdate,
++    'annotations-batch-create': annotationsBatchCreateTool,
++    'annotations-batch-delete': annotationsBatchDeleteTool,
++}
+diff --git a/services/mcp/src/tools/atomic/insightsBatchUpdate.ts b/services/mcp/src/tools/atomic/insightsBatchUpdate.ts
+new file mode 100644
+index 00000000000..f348e5c586e
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/insightsBatchUpdate.ts
+@@ -0,0 +1,200 @@
++/**
++ * insights-batch-update: change name, description, tags, favorited or soft-delete across many
++ * insights in one call, with a result per insight. See batch.ts for the semantics.
++ *
++ * `tags` replaces an insight's tags. `add_tags` and `remove_tags` edit them in place, which is a
++ * read-merge-write, so those items go through the version guard: if the insight changed between
++ * the validation read and the write, that item reports `conflict` and is not written.
++ */
++import { z } from 'zod'
++
++import * as orvalSchemas from '@/generated/product_analytics/api'
++import { canonicalJson } from '@/lib/plain-object'
++import type { Context, ToolBase } from '@/tools/types'
++
++import { MAX_BATCH_ITEMS, runBatch, type BatchResult, type ItemResult } from './batch'
++import { type ApiObject, insightResource, resolveInsightId } from './resources'
++import { versionCheckedUpdate, type VersionedResource } from './versionGuard'
++
++const body = orvalSchemas.InsightsPartialUpdateBody().shape
++
++const TagList = z.array(z.string().min(1)).max(50)
++
++export const InsightBatchItemSchema = z
++    .object({
++        id: z.union([z.number().int(), z.string().min(1)]).describe('Insight id or short_id.'),
++        name: body.name.describe('New name.'),
++        description: body.description.describe('New description. Null clears it.'),
++        tags: TagList.optional().describe("Replace all of the insight's tags with this list."),
++        add_tags: TagList.optional().describe('Tags to add, keeping the existing ones.'),
++        remove_tags: TagList.optional().describe('Tags to remove, keeping the others.'),
++        favorited: z.boolean().optional().describe('Star or unstar the insight.'),
++        deleted: z
++            .literal(true)
++            .optional()
++            .describe('Soft-delete the insight, as insight-delete does. Insights have no separate archive state.'),
++    })
++    .strict()
++    .superRefine((item, ctx) => {
++        const fields = ['name', 'description', 'tags', 'add_tags', 'remove_tags', 'favorited', 'deleted'] as const
++        if (!fields.some((field) => item[field] !== undefined)) {
++            ctx.addIssue({ code: 'custom', message: `give at least one of ${fields.join(', ')}` })
++        }
++        if (item.tags !== undefined && (item.add_tags !== undefined || item.remove_tags !== undefined)) {
++            ctx.addIssue({
++                code: 'custom',
++                message: 'use either `tags` (replace) or `add_tags`/`remove_tags`, not both',
++            })
++        }
++    })
++    .describe('One insight and the changes to make to it.')
++
++export type InsightBatchItem = z.infer<typeof InsightBatchItemSchema>
++
++export const InsightsBatchUpdateSchema = z.object({
++    items: z
++        .array(InsightBatchItemSchema)
++        .min(1)
++        .max(MAX_BATCH_ITEMS)
++        .describe(`The insights to change, at most ${MAX_BATCH_ITEMS} per call.`),
++    dry_run: z
++        .boolean()
++        .optional()
++        .describe('Validate every item and report what would change, without writing anything.'),
++    stop_on_error: z
++        .boolean()
++        .optional()
++        .describe('Start no further writes after the first failed one. The rest are reported as skipped.'),
++})
++
++const uniq = (tags: readonly string[]): string[] => [...new Set(tags)]
++
++/** The PATCH body for `item`, computed from the insight as it is now. Only fields that change are kept. */
++export function planInsightChange(item: InsightBatchItem, current: ApiObject): Record<string, unknown> {
++    const next: Record<string, unknown> = {}
++    const currentTags = Array.isArray(current.tags) ? (current.tags as string[]) : []
++    if (item.name !== undefined) {
++        next.name = item.name
++    }
++    if (item.description !== undefined) {
++        next.description = item.description
++    }
++    if (item.favorited !== undefined) {
++        next.favorited = item.favorited
++    }
++    if (item.deleted) {
++        next.deleted = true
++    }
++    if (item.tags !== undefined) {
++        next.tags = uniq(item.tags)
++    } else if (item.add_tags !== undefined || item.remove_tags !== undefined) {
++        const remove = new Set(item.remove_tags ?? [])
++        next.tags = uniq([...currentTags, ...(item.add_tags ?? [])]).filter((tag) => !remove.has(tag))
++    }
++    for (const [field, value] of Object.entries(next)) {
++        const same =
++            field === 'tags'
++                ? canonicalJson([...(value as string[])].sort()) === canonicalJson([...currentTags].sort())
++                : canonicalJson(value) === canonicalJson(current[field] ?? (field === 'deleted' ? false : null))
++        if (same) {
++            delete next[field]
++        }
++    }
++    return next
++}
++
++function changedFields(before: ApiObject, after: ApiObject, fields: string[]): Record<string, [unknown, unknown]> {
++    const out: Record<string, [unknown, unknown]> = {}
++    for (const field of fields) {
++        out[field] = [before[field] ?? (field === 'deleted' ? false : null), after[field] ?? null]
++    }
++    return out
++}
++
++type PreparedItem = {
++    item: InsightBatchItem
++    id: number
++    resource: VersionedResource<ApiObject>
++    before: ApiObject
++    body: Record<string, unknown>
++}
++
++const receiptBase = (index: number, id: number, insight: ApiObject): ItemResult => ({
++    index,
++    status: 'ok',
++    id,
++    short_id: insight.short_id as string | undefined,
++    name: (insight.name as string | null | undefined) ?? null,
++})
++
++export async function insightsBatchUpdate(
++    context: Context,
++    params: z.infer<typeof InsightsBatchUpdateSchema>
++): Promise<BatchResult> {
++    const projectId = await context.stateManager.getProjectId()
++    return await runBatch<InsightBatchItem, PreparedItem>({
++        items: params.items,
++        dryRun: params.dry_run ?? false,
++        stopOnError: params.stop_on_error ?? false,
++        prepare: async (item, index) => {
++            const id = await resolveInsightId(context, projectId, item.id)
++            const resource = insightResource(context, projectId, id)
++            const before = await resource.read()
++            const planned = planInsightChange(item, before)
++            const fields = Object.keys(planned)
++            if (fields.length === 0) {
++                return {
++                    valid: true,
++                    prepared: { item, id, resource, before, body: planned },
++                    preview: { ...receiptBase(index, id, before), status: 'unchanged' },
++                    skipWrite: true,
++                }
++            }
++            return {
++                valid: true,
++                prepared: { item, id, resource, before, body: planned },
++                preview: {
++                    ...receiptBase(index, id, before),
++                    status: 'would_change',
++                    changed: changedFields(before, planned, fields),
++                },
++            }
++        },
++        execute: async ({ item, id, resource, before, body: planned }, index) => {
++            const merges = item.add_tags !== undefined || item.remove_tags !== undefined
++            let after: ApiObject
++            let written: Record<string, unknown> = planned
++            if (merges) {
++                const result = await versionCheckedUpdate(
++                    resource,
++                    (current) => {
++                        const next = planInsightChange(item, current)
++                        return Object.keys(next).length > 0 ? { body: next } : { unchanged: true }
++                    },
++                    { base: before }
++                )
++                if (result.status !== 'ok' || !result.after) {
++                    return { ...receiptBase(index, id, before), status: 'unchanged' }
++                }
++                after = result.after
++                written = result.body ?? planned
++            } else {
++                after = await resource.write(planned, before)
++            }
++            return {
++                ...receiptBase(index, id, after),
++                changed: changedFields(
++                    before,
++                    { ...after, ...(written.deleted ? { deleted: true } : {}) },
++                    Object.keys(written)
++                ),
++            }
++        },
++    })
++}
++
++export default (): ToolBase<typeof InsightsBatchUpdateSchema, BatchResult> => ({
++    name: 'insights-batch-update',
++    schema: InsightsBatchUpdateSchema,
++    handler: insightsBatchUpdate,
++})
+diff --git a/services/mcp/src/tools/atomic/resources.ts b/services/mcp/src/tools/atomic/resources.ts
+new file mode 100644
+index 00000000000..db13270d5b9
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/resources.ts
+@@ -0,0 +1,118 @@
++/**
++ * The REST objects the atomic tools read and write, each described once as a VersionedResource:
++ * where it lives, which fields act as its version marker, and how it is written.
++ *
++ * Version markers per endpoint (what the API exposes; the backend is unchanged):
++ * - insight: `updated_at` and `last_modified_at`. No precondition field, so the re-read is the guard.
++ * - feature flag: `version` (a write counter) and `updated_at`. The PATCH accepts `version` and
++ *   refuses a stale one with 409 for flags whose `filters.version` is 2; we always send it.
++ * - survey: no marker is exposed. The guard compares the content of the fields being written
++ *   (the questions), which a concurrent edit of those fields always changes.
++ */
++import { PostHogApiError } from '@/lib/errors'
++import { canonicalJson } from '@/lib/plain-object'
++import type { Context } from '@/tools/types'
++
++import type { VersionedResource } from './versionGuard'
++
++export type ApiObject = Record<string, unknown>
++
++const enc = (value: string | number): string => encodeURIComponent(String(value))
++
++export function projectPath(projectId: string, suffix: string): string {
++    return `/api/projects/${enc(projectId)}/${suffix}`
++}
++
++/** Accepts a numeric insight id or a short_id and returns the numeric id. */
++export async function resolveInsightId(context: Context, projectId: string, id: string | number): Promise<number> {
++    if (typeof id === 'number') {
++        return id
++    }
++    const trimmed = id.trim()
++    if (/^\d+$/.test(trimmed)) {
++        return Number(trimmed)
++    }
++    const page = await context.api.request<{ results?: { id: number; short_id?: string }[] }>({
++        method: 'GET',
++        path: projectPath(projectId, 'insights/'),
++        query: { short_id: trimmed, limit: 1 },
++    })
++    const match = page.results?.find((row) => row.short_id === trimmed)
++    if (!match) {
++        throw new PostHogApiError({
++            status: 404,
++            statusText: 'Not Found',
++            body: '',
++            url: '',
++            method: 'GET',
++            message: `No insight with short_id "${trimmed}" in this project.`,
++        })
++    }
++    return match.id
++}
++
++export function insightResource(context: Context, projectId: string, id: number): VersionedResource<ApiObject> {
++    const path = projectPath(projectId, `insights/${enc(id)}/`)
++    return {
++        kind: 'insight',
++        id,
++        lockKey: `insight:${projectId}:${id}`,
++        markerFields: ['updated_at', 'last_modified_at'],
++        agentVersion: (insight) => (insight.updated_at as string | undefined) ?? null,
++        read: () => context.api.request<ApiObject>({ method: 'GET', path }),
++        write: (body) => context.api.request<ApiObject>({ method: 'PATCH', path, body }),
++    }
++}
++
++export function featureFlagResource(context: Context, projectId: string, id: number): VersionedResource<ApiObject> {
++    const path = projectPath(projectId, `feature_flags/${enc(id)}/`)
++    const counter = (flag: ApiObject): number | undefined =>
++        typeof flag.version === 'number' ? flag.version : undefined
++    return {
++        kind: 'feature flag',
++        id,
++        lockKey: `feature_flag:${projectId}:${id}`,
++        markerFields: ['version', 'updated_at'],
++        agentVersion: (flag) => counter(flag) ?? null,
++        read: () => context.api.request<ApiObject>({ method: 'GET', path }),
++        // The API's own precondition: a flag whose filters.version is 2 refuses a stale version with 409.
++        write: (body, base) =>
++            context.api.request<ApiObject>({
++                method: 'PATCH',
++                path,
++                body: counter(base) !== undefined ? { ...body, version: counter(base) } : body,
++            }),
++        expectedCounterAfterWrite: (base) => (counter(base) !== undefined ? counter(base)! + 1 : undefined),
++        counter,
++    }
++}
++
++/** A survey exposes no version marker, so its version is a short hash of its questions. */
++export function surveyQuestionsVersion(survey: ApiObject): string {
++    let hash = 0x811c9dc5
++    const text = canonicalJson(survey.questions ?? null)
++    for (let i = 0; i < text.length; i++) {
++        hash ^= text.charCodeAt(i)
++        hash = Math.imul(hash, 0x01000193) >>> 0
++    }
++    return `q-${hash.toString(16).padStart(8, '0')}`
++}
++
++export function surveyResource(context: Context, projectId: string, id: string): VersionedResource<ApiObject> {
++    const path = projectPath(projectId, `surveys/${enc(id)}/`)
++    return {
++        kind: 'survey',
++        id,
++        lockKey: `survey:${projectId}:${id}`,
++        markerFields: ['updated_at'],
++        agentVersion: surveyQuestionsVersion,
++        read: () => context.api.request<ApiObject>({ method: 'GET', path }),
++        write: (body) => context.api.request<ApiObject>({ method: 'PATCH', path, body }),
++    }
++}
++
++/** A small public link for receipts, built the same way withPostHogUrl builds it. */
++export async function appUrl(context: Context, path: string): Promise<string> {
++    const projectId = await context.stateManager.getProjectId()
++    return `${context.api.getProjectBaseUrl(projectId)}${path}`
++}
+diff --git a/services/mcp/src/tools/atomic/validation.ts b/services/mcp/src/tools/atomic/validation.ts
+new file mode 100644
+index 00000000000..5290a4f6573
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/validation.ts
+@@ -0,0 +1,98 @@
++/**
++ * Validation helpers shared by the atomic-write and batch tools.
++ *
++ * The tools keep their own input schemas small (a query is a plain object in the input schema,
++ * so the tool stays far under the registry's schema size limit), then validate each nested value
++ * here against the same schema the single-object tool uses. One schema, two entry points.
++ */
++import type { z } from 'zod'
++
++import { isRecord } from '@/lib/plain-object'
++import { GENERATED_TOOL_MAP } from '@/tools/generated'
++import type { ZodObjectAny } from '@/tools/types'
++
++type Issue = z.core.$ZodIssue
++
++function issueLines(issues: readonly Issue[], prefix: string[]): string[] {
++    const lines: string[] = []
++    for (const issue of issues) {
++        const path = [...prefix, ...issue.path.map(String)]
++        if (issue.code === 'invalid_union' && Array.isArray(issue.errors) && issue.errors.length > 0) {
++            // Report the branch the value was closest to: the one that accepted its `kind`, with the
++            // fewest problems. Listing every branch's complaint would bury the one that matters.
++            const branches = issue.errors as Issue[][]
++            const ranked = [...branches].sort((a, b) => score(a) - score(b))
++            lines.push(...issueLines(ranked[0]!, path))
++            continue
++        }
++        lines.push(`${path.join('.') || '(root)'}: ${issue.message}`)
++    }
++    return lines
++}
++
++function score(branch: readonly Issue[]): number {
++    const kindMiss = branch.some((issue) => issue.path[issue.path.length - 1] === 'kind') ? 1000 : 0
++    return kindMiss + branch.length
++}
++
++/** `a.b: message; c: message`, at most `max` entries. */
++export function formatIssues(error: z.ZodError, prefix: string[] = [], max = 5): string {
++    const lines = issueLines(error.issues, prefix)
++    const shown = lines.slice(0, max)
++    return shown.join('; ') + (lines.length > max ? `; and ${lines.length - max} more` : '')
++}
++
++function toolShape(toolName: string): Record<string, z.ZodType> | undefined {
++    const factory = GENERATED_TOOL_MAP[toolName]
++    const schema = factory?.().schema as ZodObjectAny | undefined
++    return schema && 'shape' in schema ? (schema.shape as Record<string, z.ZodType>) : undefined
++}
++
++let insightQuerySchema: z.ZodType | undefined
++
++/** The `query` schema of insight-create, so a tile is checked exactly as insight-create would check it. */
++export function getInsightQuerySchema(): z.ZodType {
++    if (!insightQuerySchema) {
++        const schema = toolShape('insight-create')?.query
++        if (!schema) {
++            throw new Error('insight-create is not registered, so a query cannot be validated')
++        }
++        insightQuerySchema = schema
++    }
++    return insightQuerySchema
++}
++
++/** Returns an error message for an invalid insight query, or undefined when it is valid. */
++export function validateInsightQuery(query: unknown, prefix: string[] = ['query']): string | undefined {
++    if (!isRecord(query)) {
++        return `${prefix.join('.')}: must be an object with a \`kind\``
++    }
++    const parsed = getInsightQuerySchema().safeParse(query)
++    return parsed.success ? undefined : formatIssues(parsed.error, prefix)
++}
++
++let annotationItemSchema: ZodObjectAny | undefined
++
++/** The input schema of annotation-create: the batch item is the single tool's input, unchanged. */
++export function getAnnotationCreateSchema(): ZodObjectAny {
++    if (!annotationItemSchema) {
++        const schema = GENERATED_TOOL_MAP['annotation-create']?.().schema as ZodObjectAny | undefined
++        if (!schema) {
++            throw new Error('annotation-create is not registered')
++        }
++        annotationItemSchema = schema
++    }
++    return annotationItemSchema
++}
++
++/**
++ * The query an insight runs. A visualization node (InsightVizNode, DataTableNode, DataVisualizationNode,
++ * BIVisualizationNode) wraps the runnable query in `source`; anything else runs as it is.
++ */
++export function runnableQuery(query: Record<string, unknown>): Record<string, unknown> {
++    const wrappers = ['InsightVizNode', 'DataTableNode', 'DataVisualizationNode', 'BIVisualizationNode']
++    if (typeof query.kind === 'string' && wrappers.includes(query.kind) && isRecord(query.source)) {
++        return query.source
++    }
++    return query
++}
+diff --git a/services/mcp/src/tools/atomic/versionGuard.ts b/services/mcp/src/tools/atomic/versionGuard.ts
+new file mode 100644
+index 00000000000..fbe0eb9f2c4
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/versionGuard.ts
+@@ -0,0 +1,168 @@
++/**
++ * Version-checked read-merge-write.
++ *
++ * A partial update in the MCP layer has to read the object, change one part, and write the field
++ * back whole, because the REST endpoints replace nested arrays (flag conditions, survey questions,
++ * an insight's query) as a unit. Done naively, a second writer's change that lands between the read
++ * and the write is silently overwritten: the lost-update bug. This module wraps that sequence:
++ *
++ *   1. Lock the object inside this process (KeyedMutex), so two MCP updates of the same object
++ *      through this server run one after the other instead of racing.
++ *   2. Read the object, and refuse when the agent's `base_version` no longer matches.
++ *   3. Build the change from what was just read (the caller's `plan`), and validate it.
++ *   4. Re-read the object immediately before the write and compare its version marker and the
++ *      fields being written. If anything changed, write nothing and raise a WriteConflictError.
++ *   5. Write, sending the endpoint's own precondition when it has one (a flag's `version`), and map
++ *      the API's 409 to the same conflict.
++ *   6. Where the endpoint keeps a write counter (a flag's `version`), check that the write moved it
++ *      by exactly one. More than one means another write landed in the window; the receipt says so.
++ *
++ * What remains: between step 4's re-read and step 5's write (one API round trip) a writer outside
++ * this process (the UI, another server instance) can still land a change, and an endpoint without
++ * a precondition will accept our write on top of it. For flags step 6 detects this after the fact;
++ * for insights and surveys nothing in the API can.
++ */
++import { canonicalJson, isRecord } from '@/lib/plain-object'
++
++import { KeyedMutex, objectLocks } from './concurrency'
++import { WriteConflictError, errorStatus } from './errors'
++
++export interface VersionedResource<T extends Record<string, unknown>> {
++    /** Human name used in messages, e.g. `insight`. */
++    kind: string
++    id: string | number
++    /** Lock key; include the project so two projects never share a lock. */
++    lockKey: string
++    read(): Promise<T>
++    /** Fields that change on every accepted write (updated_at, last_modified_at, version). Missing ones are skipped. */
++    markerFields: readonly string[]
++    /** The value an agent sends back as `base_version`: a flag's version, an insight's updated_at. */
++    agentVersion(object: T): string | number | null | undefined
++    write(body: Record<string, unknown>, base: T): Promise<T>
++    /** For an endpoint with a write counter: what the counter must read after exactly one write on `base`. */
++    expectedCounterAfterWrite?(base: T): number | undefined
++    counter?(object: T): number | undefined
++}
++
++/** What the caller wants written, computed from the object as it was just read. */
++export type UpdatePlan = { body: Record<string, unknown> } | { unchanged: true }
++
++export interface GuardedUpdateResult<T> {
++    status: 'ok' | 'unchanged' | 'dry_run'
++    before: T
++    /** The object the write returned. Undefined when nothing was written. */
++    after?: T
++    body?: Record<string, unknown>
++    /** True when the write counter shows another write landed in the race window. */
++    concurrentWriteDetected?: boolean
++    warning?: string
++}
++
++export interface GuardedUpdateOptions<T> {
++    /** The version the agent last read. When set and the object has moved on, nothing is written. */
++    baseVersion?: string | number | null | undefined
++    dryRun?: boolean | undefined
++    /** A pre-image the caller already read (a batch validates every item first). Skips the first read. */
++    base?: T | undefined
++    locks?: KeyedMutex
++}
++
++function pick(object: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
++    const out: Record<string, unknown> = {}
++    for (const field of fields) {
++        if (Object.prototype.hasOwnProperty.call(object, field)) {
++            out[field] = object[field]
++        }
++    }
++    return out
++}
++
++/** The version marker plus the content of the fields about to be written. */
++export function fingerprint(
++    object: Record<string, unknown>,
++    markerFields: readonly string[],
++    writtenFields: readonly string[]
++): string {
++    return canonicalJson({ markers: pick(object, markerFields), fields: pick(object, writtenFields) })
++}
++
++function describeMarkers(object: Record<string, unknown>, markerFields: readonly string[]): string {
++    const markers = pick(object, markerFields)
++    const parts = Object.entries(markers).map(([key, value]) => `${key} ${JSON.stringify(value)}`)
++    return parts.length > 0 ? parts.join(', ') : 'content'
++}
++
++export async function versionCheckedUpdate<T extends Record<string, unknown>>(
++    resource: VersionedResource<T>,
++    plan: (current: T) => UpdatePlan | Promise<UpdatePlan>,
++    options: GuardedUpdateOptions<T> = {}
++): Promise<GuardedUpdateResult<T>> {
++    const locks = options.locks ?? objectLocks
++    return await locks.runExclusive(resource.lockKey, async () => {
++        const before = options.base ?? (await resource.read())
++
++        if (options.baseVersion !== undefined && options.baseVersion !== null) {
++            const current = resource.agentVersion(before)
++            if (String(current) !== String(options.baseVersion)) {
++                throw new WriteConflictError(
++                    `Conflict: ${resource.kind} ${resource.id} has changed since the version you read ` +
++                        `(you sent base_version ${JSON.stringify(options.baseVersion)}, it is now ${JSON.stringify(current)}). ` +
++                        `Nothing was written. Read it again and redo the change against the new version.`,
++                    { kind: resource.kind, id: resource.id, before: options.baseVersion, now: current }
++                )
++            }
++        }
++
++        const planned = await plan(before)
++        if ('unchanged' in planned) {
++            return { status: 'unchanged', before }
++        }
++        if (options.dryRun) {
++            return { status: 'dry_run', before, body: planned.body }
++        }
++
++        // Re-read immediately before writing: the narrowest window the REST API allows.
++        const writtenFields = Object.keys(planned.body).filter((field) => field !== 'version')
++        const check = await resource.read()
++        const expected = fingerprint(before, resource.markerFields, writtenFields)
++        if (fingerprint(check, resource.markerFields, writtenFields) !== expected) {
++            throw new WriteConflictError(
++                `Conflict: ${resource.kind} ${resource.id} was changed by someone else while this update was being ` +
++                    `prepared (${describeMarkers(before, resource.markerFields)} → ${describeMarkers(check, resource.markerFields)}). ` +
++                    `Nothing was written. Read it again and retry the change.`,
++                {
++                    kind: resource.kind,
++                    id: resource.id,
++                    before: pick(before, resource.markerFields),
++                    now: pick(check, resource.markerFields),
++                }
++            )
++        }
++
++        let after: T
++        try {
++            after = await resource.write(planned.body, before)
++        } catch (error) {
++            if (errorStatus(error) === 409) {
++                throw new WriteConflictError(
++                    `Conflict: the API refused the write because ${resource.kind} ${resource.id} changed after version ` +
++                        `${JSON.stringify(resource.agentVersion(before))}. Nothing was written. Read it again and retry the change.`,
++                    { kind: resource.kind, id: resource.id, before: resource.agentVersion(before) }
++                )
++            }
++            throw error
++        }
++
++        const result: GuardedUpdateResult<T> = { status: 'ok', before, after, body: planned.body }
++        const expectedCounter = resource.expectedCounterAfterWrite?.(before)
++        const actualCounter = isRecord(after) ? resource.counter?.(after) : undefined
++        if (expectedCounter !== undefined && actualCounter !== undefined && actualCounter > expectedCounter) {
++            result.concurrentWriteDetected = true
++            result.warning =
++                `Another write to ${resource.kind} ${resource.id} landed between the final check and this write ` +
++                `(version is ${actualCounter}, expected ${expectedCounter}). This change was applied, but it may have ` +
++                `replaced that other change. Read the ${resource.kind} again and check it before going on.`
++        }
++        return result
++    })
++}
+diff --git a/services/mcp/src/tools/index.ts b/services/mcp/src/tools/index.ts
+index 40a94ab453b..cdd2abd3cac 100644
+--- a/services/mcp/src/tools/index.ts
++++ b/services/mcp/src/tools/index.ts
+@@ -5,6 +5,8 @@ import { filterStaffOnlyTools } from '@/lib/staff-only-tools'
+ import getLLMCosts from './aiObservability/getLLMCosts'
+ import parserRecipeCreate from './aiObservability/parserRecipeCreate'
+ import parserRecipeReference from './aiObservability/parserRecipeReference'
++// Atomic writes and batches (validate-first batches, dashboard with tiles, version-checked partial updates)
++import { ATOMIC_TOOLS } from './atomic'
+ // Debug
+ import debugMcpUiApps from './debug/debugMcpUiApps'
+ // Experiments (hand-written — CRUD + lifecycle are codegen in generated/experiments.ts)
+@@ -164,6 +166,9 @@ export const TOOL_MAP: Record<string, () => ToolBase<ZodObjectAny>> = {
+ 
+     // Skills — deprecated llma-skill-* aliases forwarding to the renamed skill-* tools.
+     ...SKILL_DEPRECATED_ALIASES,
++
++    // Atomic writes and batches — see docs/atomic-and-batch-tools.md.
++    ...ATOMIC_TOOLS,
+ }
+ 
+ /** Build one tool by name, from the hand-written and generated registries alike. */
+diff --git a/services/mcp/tests/fixtures/fake-posthog-backend.ts b/services/mcp/tests/fixtures/fake-posthog-backend.ts
+new file mode 100644
+index 00000000000..b0b880353bd
+--- /dev/null
++++ b/services/mcp/tests/fixtures/fake-posthog-backend.ts
+@@ -0,0 +1,253 @@
++/**
++ * An in-memory stand-in for the PostHog REST endpoints the atomic-write and batch tools call.
++ *
++ * It behaves like the real API where the tools depend on it:
++ * - PATCH updates only the fields it is sent (field-level, as insights do since PostHog#131620) and
++ *   moves `updated_at`; a feature flag's `version` goes up by one per write.
++ * - A soft-deleted object reads as 404.
++ * - With `flagVersionCheck`, a flag PATCH whose `version` is stale is refused with 409 (the
++ *   behaviour of flags whose filters.version is 2).
++ * - Every request waits `latency()` ms before it reads or writes, so concurrent calls interleave the
++ *   way real round trips do. `beforeWrite` runs just before a write is applied, which lets a test put
++ *   another writer exactly in the race window.
++ */
++import { PostHogApiError, PostHogValidationError } from '@/lib/errors'
++import type { Context } from '@/tools/types'
++
++type Json = Record<string, unknown>
++
++export interface RequestLog {
++    method: string
++    path: string
++    body?: Json | undefined
++    query?: Json | undefined
++}
++
++export interface FakeOptions {
++    latency?: () => number
++    flagVersionCheck?: boolean
++}
++
++const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
++
++export class FakePostHog {
++    readonly store = new Map<string, Map<number | string, Json>>()
++    readonly log: RequestLog[] = []
++    private nextId = 1000
++    private tick = 0
++    latency: () => number
++    flagVersionCheck: boolean
++    /** Runs right before a write is applied. */
++    beforeWrite?: (request: RequestLog) => Promise<void> | void
++    /** Return an error to fail a request instead of serving it. */
++    failWhen?: (request: RequestLog) => Error | undefined
++    /** Result or error for a query run. */
++    runQuery: (query: Json) => Promise<unknown> = async () => ({ results: [] })
++
++    constructor(options: FakeOptions = {}) {
++        this.latency = options.latency ?? (() => 0)
++        this.flagVersionCheck = options.flagVersionCheck ?? false
++    }
++
++    private now(): string {
++        this.tick += 1
++        return new Date(Date.UTC(2026, 10, 10, 12, 0, 0, 0) + this.tick).toISOString()
++    }
++
++    collection(name: string): Map<number | string, Json> {
++        let map = this.store.get(name)
++        if (!map) {
++            map = new Map()
++            this.store.set(name, map)
++        }
++        return map
++    }
++
++    seed(name: string, object: Json): Json {
++        const id = (object.id as number | string | undefined) ?? this.nextId++
++        const stored: Json = { ...clone(object), id, updated_at: object.updated_at ?? this.now() }
++        if (name === 'feature_flags' && stored.version === undefined) {
++            stored.version = 1
++        }
++        this.collection(name).set(id, stored)
++        return stored
++    }
++
++    get(name: string, id: number | string): Json | undefined {
++        return this.collection(name).get(id)
++    }
++
++    /** Applies a write from outside the tools (the UI, another server), without any latency. */
++    externalPatch(name: string, id: number | string, body: Json): Json {
++        const object = this.collection(name).get(id)
++        if (!object) {
++            throw new Error(`no ${name} ${id}`)
++        }
++        Object.assign(object, clone(body), { updated_at: this.now() })
++        if (name === 'feature_flags') {
++            object.version = Number(object.version ?? 0) + 1
++        }
++        return clone(object)
++    }
++
++    private notFound(path: string, method: string): PostHogApiError {
++        return new PostHogApiError({ status: 404, statusText: 'Not Found', body: '{"detail":"Not found."}', url: path, method })
++    }
++
++    private view(name: string, object: Json): Json {
++        if (name === 'insights') {
++            const tiles = [...this.collection('dashboard_tiles').values()].filter((tile) => tile.insight === object.id)
++            return {
++                ...clone(object),
++                dashboards: tiles.map((tile) => tile.dashboard),
++                dashboard_tiles: tiles.map((tile) => ({ id: tile.id, dashboard_id: tile.dashboard, deleted: null })),
++            }
++        }
++        if (name === 'dashboards') {
++            const tiles = [...this.collection('dashboard_tiles').values()].filter((tile) => tile.dashboard === object.id)
++            return { ...clone(object), tiles: tiles.map((tile) => ({ id: tile.id, insight: { id: tile.insight } })) }
++        }
++        return clone(object)
++    }
++
++    private setDashboards(insightId: number, dashboards: number[]): void {
++        const tiles = this.collection('dashboard_tiles')
++        for (const [id, tile] of tiles) {
++            if (tile.insight === insightId && !dashboards.includes(tile.dashboard as number)) {
++                tiles.delete(id)
++            }
++        }
++        for (const dashboard of dashboards) {
++            const exists = [...tiles.values()].some((tile) => tile.insight === insightId && tile.dashboard === dashboard)
++            if (!exists) {
++                const id = this.nextId++
++                tiles.set(id, { id, insight: insightId, dashboard })
++            }
++        }
++    }
++
++    request = async <T = unknown>(opts: {
++        method: string
++        path: string
++        body?: Json
++        query?: Json
++    }): Promise<T> => {
++        const entry: RequestLog = { method: opts.method, path: opts.path, body: opts.body, query: opts.query }
++        this.log.push(entry)
++        await new Promise((resolve) => setTimeout(resolve, this.latency()))
++        const failure = this.failWhen?.(entry)
++        if (failure) {
++            throw failure
++        }
++        const match = /^\/api\/(?:projects|environments)\/[^/]+\/([a-z_]+)\/(?:([^/]+)\/)?(?:([a-z_]+)\/)?$/.exec(opts.path)
++        if (!match) {
++            throw new Error(`fake backend has no route for ${opts.method} ${opts.path}`)
++        }
++        const [, name, rawId, action] = match as unknown as [string, string, string | undefined, string | undefined]
++        const items = this.collection(name)
++        const id = rawId === undefined ? undefined : /^\d+$/.test(rawId) ? Number(rawId) : rawId
++
++        if (name === 'query' && opts.method === 'POST') {
++            return (await this.runQuery((opts.body?.query ?? {}) as Json)) as T
++        }
++
++        if (id === undefined) {
++            if (opts.method === 'GET') {
++                let rows = [...items.values()].filter((row) => row.deleted !== true)
++                if (opts.query?.short_id !== undefined) {
++                    rows = rows.filter((row) => row.short_id === opts.query?.short_id)
++                }
++                if (typeof opts.query?.search === 'string') {
++                    const term = opts.query.search.toLowerCase()
++                    rows = rows.filter((row) => String(row.content ?? row.name ?? '').toLowerCase().includes(term))
++                }
++                return { results: rows.map((row) => this.view(name, row)) } as T
++            }
++            if (opts.method === 'POST') {
++                await this.beforeWrite?.(entry)
++                const { dashboards, ...rest } = clone(opts.body ?? {})
++                if (name === 'insights' && rest.query === undefined) {
++                    throw new PostHogValidationError({
++                        detail: 'query is required',
++                        attr: 'query',
++                        code: undefined,
++                        extra: undefined,
++                        url: opts.path,
++                        method: 'POST',
++                    })
++                }
++                const created = this.seed(name, {
++                    ...rest,
++                    ...(name === 'insights' ? { short_id: `s${this.nextId}`, tags: rest.tags ?? [] } : {}),
++                    created_at: this.now(),
++                })
++                if (name === 'insights' && Array.isArray(dashboards)) {
++                    this.setDashboards(created.id as number, dashboards as number[])
++                }
++                return this.view(name, created) as T
++            }
++        }
++
++        const object = id === undefined ? undefined : items.get(id)
++        if (!object || object.deleted === true) {
++            throw this.notFound(opts.path, opts.method)
++        }
++        if (action === 'reorder_tiles' && opts.method === 'POST') {
++            await this.beforeWrite?.(entry)
++            object.tile_order = clone(opts.body?.tile_order)
++            object.layout = opts.body?.layout
++            return this.view(name, object) as T
++        }
++        if (opts.method === 'GET') {
++            return this.view(name, object) as T
++        }
++        if (opts.method === 'PATCH') {
++            await this.beforeWrite?.(entry)
++            const { version, dashboards, ...fields } = clone(opts.body ?? {})
++            if (name === 'feature_flags' && this.flagVersionCheck && version !== undefined && version !== object.version) {
++                throw new PostHogApiError({
++                    status: 409,
++                    statusText: 'Conflict',
++                    body: '{"detail":"The flag was updated since you read it."}',
++                    url: opts.path,
++                    method: 'PATCH',
++                })
++            }
++            Object.assign(object, fields, { updated_at: this.now() })
++            if (name === 'feature_flags') {
++                object.version = Number(object.version ?? 0) + 1
++            }
++            if (name === 'insights' && Array.isArray(dashboards)) {
++                this.setDashboards(object.id as number, dashboards as number[])
++            }
++            return this.view(name, object) as T
++        }
++        throw new Error(`fake backend has no route for ${opts.method} ${opts.path}`)
++    }
++
++    context(): Context {
++        return {
++            api: {
++                request: this.request,
++                getProjectBaseUrl: (projectId: string) => `http://ph.test/project/${projectId}`,
++                query: () => ({ runQuery: async ({ query }: { query: Json }) => this.request({ method: 'POST', path: '/api/environments/42/query/', body: { query } }) }),
++            } as unknown as Context['api'],
++            stateManager: { getProjectId: async () => '42' } as unknown as Context['stateManager'],
++            env: {} as Context['env'],
++            sessionManager: {} as Context['sessionManager'],
++            cache: {} as Context['cache'],
++            getDistinctId: async () => 'test',
++            trackEvent: async () => {},
++        } as Context
++    }
++
++    writes(): RequestLog[] {
++        return this.log.filter((entry) => entry.method !== 'GET' && !entry.path.endsWith('/query/'))
++    }
++}
++
++/** Random latency between `min` and `max` ms. */
++export const jitter =
++    (min = 0, max = 4): (() => number) =>
++    () =>
++        min + Math.random() * (max - min)
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-create.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-create.json
+new file mode 100644
+index 00000000000..d6b4a56d30f
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-create.json
+@@ -0,0 +1,106 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "dry_run": {
++            "description": "Validate every item and report what would be created, without writing.",
++            "type": "boolean"
++        },
++        "items": {
++            "description": "The annotations to create, at most 50 per call.",
++            "items": {
++                "description": "One annotation, with the same fields as annotation-create.",
++                "properties": {
++                    "content": {
++                        "anyOf": [
++                            {
++                                "maxLength": 8192,
++                                "type": "string"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "Annotation text shown on charts to describe the change, release, or incident."
++                    },
++                    "dashboard_id": {
++                        "anyOf": [
++                            {
++                                "type": "number"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "Optional dashboard ID to attach this annotation to. Must belong to the current project."
++                    },
++                    "dashboard_item": {
++                        "anyOf": [
++                            {
++                                "type": "number"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "Optional insight ID to attach this annotation to. Must belong to the current project."
++                    },
++                    "date_marker": {
++                        "anyOf": [
++                            {
++                                "format": "date-time",
++                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
++                                "type": "string"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "When this annotation happened (ISO 8601 timestamp). Used to position it on charts."
++                    },
++                    "emoji": {
++                        "anyOf": [
++                            {
++                                "maxLength": 16,
++                                "type": "string"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "Optional emoji shown in place of the default badge when this annotation is surfaced on a chart."
++                    },
++                    "hidden_in_user_interface": {
++                        "anyOf": [
++                            {
++                                "type": "boolean"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "When true, the annotation is hidden from the PostHog UI (charts and the annotations list) but still readable over the API and MCP. Use for high-frequency markers like deployments that would otherwise crowd the UI. Null (the default) means the annotation is shown."
++                    },
++                    "scope": {
++                        "description": "Annotation visibility scope: `project`, `organization`, `dashboard`, or `dashboard_item`. `recording` is deprecated and rejected.\n\n* `dashboard_item` - insight\n* `dashboard` - dashboard\n* `project` - project\n* `organization` - organization\n* `recording` - recording",
++                        "enum": ["dashboard_item", "dashboard", "project", "organization", "recording"],
++                        "type": "string"
++                    }
++                },
++                "type": "object"
++            },
++            "maxItems": 50,
++            "minItems": 1,
++            "type": "array"
++        },
++        "skip_duplicates": {
++            "description": "Default true. Report an item whose content, date_marker and scope match a live annotation as `exists` instead of creating it again, so a retried batch does not duplicate.",
++            "type": "boolean"
++        },
++        "stop_on_error": {
++            "description": "Start no further creates after the first failed one. The rest are reported as skipped.",
++            "type": "boolean"
++        }
++    },
++    "required": ["items"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-delete.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-delete.json
+new file mode 100644
+index 00000000000..b9bcd4c66f2
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/annotations-batch-delete.json
+@@ -0,0 +1,26 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "dry_run": {
++            "description": "Check that every annotation exists and report what would be deleted, without deleting.",
++            "type": "boolean"
++        },
++        "ids": {
++            "description": "Ids of the annotations to soft-delete, at most 50 per call.",
++            "items": {
++                "maximum": 9007199254740991,
++                "minimum": -9007199254740991,
++                "type": "integer"
++            },
++            "maxItems": 50,
++            "minItems": 1,
++            "type": "array"
++        },
++        "stop_on_error": {
++            "description": "Start no further deletes after the first failed one. The rest are reported as skipped.",
++            "type": "boolean"
++        }
++    },
++    "required": ["ids"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/insights-batch-update.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/insights-batch-update.json
+new file mode 100644
+index 00000000000..560f657583b
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/insights-batch-update.json
+@@ -0,0 +1,103 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "dry_run": {
++            "description": "Validate every item and report what would change, without writing anything.",
++            "type": "boolean"
++        },
++        "items": {
++            "description": "The insights to change, at most 50 per call.",
++            "items": {
++                "additionalProperties": false,
++                "description": "One insight and the changes to make to it.",
++                "properties": {
++                    "add_tags": {
++                        "description": "Tags to add, keeping the existing ones.",
++                        "items": {
++                            "minLength": 1,
++                            "type": "string"
++                        },
++                        "maxItems": 50,
++                        "type": "array"
++                    },
++                    "deleted": {
++                        "const": true,
++                        "description": "Soft-delete the insight, as insight-delete does. Insights have no separate archive state.",
++                        "type": "boolean"
++                    },
++                    "description": {
++                        "anyOf": [
++                            {
++                                "maxLength": 400,
++                                "type": "string"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "New description. Null clears it."
++                    },
++                    "favorited": {
++                        "description": "Star or unstar the insight.",
++                        "type": "boolean"
++                    },
++                    "id": {
++                        "anyOf": [
++                            {
++                                "maximum": 9007199254740991,
++                                "minimum": -9007199254740991,
++                                "type": "integer"
++                            },
++                            {
++                                "minLength": 1,
++                                "type": "string"
++                            }
++                        ],
++                        "description": "Insight id or short_id."
++                    },
++                    "name": {
++                        "anyOf": [
++                            {
++                                "maxLength": 400,
++                                "type": "string"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "New name."
++                    },
++                    "remove_tags": {
++                        "description": "Tags to remove, keeping the others.",
++                        "items": {
++                            "minLength": 1,
++                            "type": "string"
++                        },
++                        "maxItems": 50,
++                        "type": "array"
++                    },
++                    "tags": {
++                        "description": "Replace all of the insight's tags with this list.",
++                        "items": {
++                            "minLength": 1,
++                            "type": "string"
++                        },
++                        "maxItems": 50,
++                        "type": "array"
++                    }
++                },
++                "required": ["id"],
++                "type": "object"
++            },
++            "maxItems": 50,
++            "minItems": 1,
++            "type": "array"
++        },
++        "stop_on_error": {
++            "description": "Start no further writes after the first failed one. The rest are reported as skipped.",
++            "type": "boolean"
++        }
++    },
++    "required": ["items"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/atomic-batch-tools.test.ts b/services/mcp/tests/unit/atomic-batch-tools.test.ts
+new file mode 100644
+index 00000000000..d6f930dd483
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-batch-tools.test.ts
+@@ -0,0 +1,283 @@
++import { describe, expect, it } from 'vitest'
++
++import { PostHogApiError } from '@/lib/errors'
++import {
++    annotationsBatchCreate,
++    annotationsBatchDelete,
++    AnnotationsBatchCreateSchema,
++} from '@/tools/atomic/annotationsBatch'
++import { MAX_BATCH_ITEMS } from '@/tools/atomic/batch'
++import { insightsBatchUpdate, InsightsBatchUpdateSchema, planInsightChange } from '@/tools/atomic/insightsBatchUpdate'
++
++import { FakePostHog, jitter } from '../fixtures/fake-posthog-backend'
++
++function withInsights(count: number, options: ConstructorParameters<typeof FakePostHog>[0] = {}): FakePostHog {
++    const fake = new FakePostHog(options)
++    for (let i = 0; i < count; i++) {
++        fake.seed('insights', {
++            id: 80 + i,
++            short_id: `short${String(i).padStart(3, '0')}`,
++            name: `old ${i}`,
++            description: null,
++            query: { kind: 'InsightVizNode', source: { kind: 'TrendsQuery', series: [] } },
++            tags: i % 2 === 0 ? ['keep'] : [],
++            favorited: false,
++        })
++    }
++    return fake
++}
++
++const parse = <T>(schema: { parse: (value: unknown) => T }, value: unknown): T => schema.parse(value)
++
++describe('insights-batch-update', () => {
++    it('tags ten insights in one call with a result per insight and a summary', async () => {
++        const fake = withInsights(10, { latency: jitter(0, 2) })
++        const result = await insightsBatchUpdate(
++            fake.context(),
++            parse(InsightsBatchUpdateSchema, {
++                items: Array.from({ length: 10 }, (_, i) => ({ id: 80 + i, add_tags: ['legacy'] })),
++            })
++        )
++        expect(result.summary).toMatchObject({
++            requested: 10,
++            ok: 10,
++            failed: 0,
++            written: 10,
++            atomic: false,
++            dry_run: false,
++        })
++        expect(result.items[0]).toMatchObject({
++            index: 0,
++            id: 80,
++            status: 'ok',
++            changed: 'tags: ["keep"] → ["keep","legacy"]',
++        })
++        expect(result.items[1]).toMatchObject({ id: 81, changed: 'tags: [] → ["legacy"]' })
++        expect(fake.get('insights', 80)!.tags).toEqual(['keep', 'legacy'])
++        // add_tags kept the existing tag: the merge is computed from the stored insight.
++        expect(fake.get('insights', 81)!.tags).toEqual(['legacy'])
++    })
++
++    it('validates every item before writing: one bad id means nothing is written', async () => {
++        const fake = withInsights(3)
++        const result = await insightsBatchUpdate(
++            fake.context(),
++            parse(InsightsBatchUpdateSchema, {
++                items: [
++                    { id: 80, name: 'new 0' },
++                    { id: 999, name: 'missing' },
++                    { id: 'short002', deleted: true },
++                ],
++            })
++        )
++        expect(fake.writes()).toHaveLength(0)
++        expect(result.summary).toMatchObject({ written: 0, failed: 1, skipped: 2 })
++        expect(result.summary.aborted).toMatch(/nothing was written/)
++        expect(result.items.map((item) => item.status)).toEqual(['not_attempted', 'error', 'not_attempted'])
++        expect(result.items[1]!.error).toMatch(/404|Not Found/)
++    })
++
++    it('dry_run reports what would change and writes nothing', async () => {
++        const fake = withInsights(2)
++        const result = await insightsBatchUpdate(
++            fake.context(),
++            parse(InsightsBatchUpdateSchema, {
++                dry_run: true,
++                items: [
++                    { id: 80, name: 'renamed', tags: ['keep'] },
++                    { id: 81, favorited: false },
++                ],
++            })
++        )
++        expect(fake.writes()).toHaveLength(0)
++        expect(result.summary).toMatchObject({ dry_run: true, written: 0, ok: 1, unchanged: 1 })
++        // tags: ['keep'] is already the value, so only the name would change.
++        expect(result.items[0]).toMatchObject({ status: 'would_change', changed: 'name: "old 0" → "renamed"' })
++        expect(result.items[0]!.changed).not.toContain('tags')
++        expect(result.items[1]).toMatchObject({ status: 'unchanged' })
++    })
++
++    it('is best-effort after validation: a failed write is reported on its item and the others are kept', async () => {
++        const fake = withInsights(4)
++        fake.failWhen = (request) =>
++            request.method === 'PATCH' && request.path.endsWith('/insights/82/')
++                ? new PostHogApiError({
++                      status: 500,
++                      statusText: 'Server Error',
++                      body: '',
++                      url: request.path,
++                      method: 'PATCH',
++                  })
++                : undefined
++        const result = await insightsBatchUpdate(
++            fake.context(),
++            parse(InsightsBatchUpdateSchema, { items: [80, 81, 82, 83].map((id) => ({ id, deleted: true })) })
++        )
++        expect(result.summary).toMatchObject({ ok: 3, failed: 1, written: 3 })
++        expect(result.items[2]).toMatchObject({ id: 82, status: 'error' })
++        expect(result.items[0]).toMatchObject({ status: 'ok', changed: 'deleted: false → true' })
++        expect(fake.get('insights', 83)!.deleted).toBe(true)
++    })
++
++    it('stop_on_error starts no further writes after the first failure', async () => {
++        const fake = withInsights(5)
++        fake.failWhen = (request) =>
++            request.method === 'PATCH' && request.path.endsWith('/insights/80/')
++                ? new PostHogApiError({
++                      status: 500,
++                      statusText: 'Server Error',
++                      body: '',
++                      url: request.path,
++                      method: 'PATCH',
++                  })
++                : undefined
++        const result = await insightsBatchUpdate(
++            fake.context(),
++            parse(InsightsBatchUpdateSchema, {
++                stop_on_error: true,
++                items: [80, 81, 82, 83, 84].map((id) => ({ id, name: 'x' })),
++            })
++        )
++        // Four writes start at once (the fan-out width), so at most those four run; the fifth never starts.
++        expect(result.items[4]).toMatchObject({ status: 'skipped' })
++        expect(result.summary.failed).toBe(1)
++    })
++
++    it('reports a conflict, without writing, when an add_tags insight changed after validation', async () => {
++        const fake = withInsights(2)
++        let first = true
++        fake.beforeWrite = undefined
++        const original = fake.request
++        // Change insight 80 from outside right after the validation read.
++        fake.request = (async (opts: { method: string; path: string }) => {
++            const response = await original(opts as never)
++            if (first && opts.method === 'GET' && opts.path.endsWith('/insights/80/')) {
++                first = false
++                fake.externalPatch('insights', 80, { tags: ['set-in-ui'] })
++            }
++            return response
++        }) as typeof fake.request
++        const result = await insightsBatchUpdate(
++            fake.context(),
++            parse(InsightsBatchUpdateSchema, {
++                items: [
++                    { id: 80, add_tags: ['legacy'] },
++                    { id: 81, add_tags: ['legacy'] },
++                ],
++            })
++        )
++        expect(result.items[0]).toMatchObject({ status: 'conflict' })
++        expect(result.items[0]!.error).toMatch(/Nothing was written/)
++        expect(fake.get('insights', 80)!.tags).toEqual(['set-in-ui'])
++        expect(result.items[1]).toMatchObject({ status: 'ok' })
++    })
++
++    it('rejects bad items at the schema: unknown keys, no change, tags with add_tags, too many items', () => {
++        expect(InsightsBatchUpdateSchema.safeParse({ items: [{ id: 1, title: 'x' }] }).success).toBe(false)
++        expect(InsightsBatchUpdateSchema.safeParse({ items: [{ id: 1 }] }).success).toBe(false)
++        expect(InsightsBatchUpdateSchema.safeParse({ items: [{ id: 1, tags: [], add_tags: ['a'] }] }).success).toBe(
++            false
++        )
++        expect(
++            InsightsBatchUpdateSchema.safeParse({
++                items: Array.from({ length: MAX_BATCH_ITEMS + 1 }, (_, i) => ({ id: i, name: 'x' })),
++            }).success
++        ).toBe(false)
++    })
++
++    it('plans only the fields that change', () => {
++        expect(planInsightChange({ id: 1, add_tags: ['a'], remove_tags: ['b'] }, { tags: ['b', 'c'] })).toEqual({
++            tags: ['c', 'a'],
++        })
++        expect(planInsightChange({ id: 1, tags: ['c', 'a'] }, { tags: ['a', 'c'] })).toEqual({})
++        expect(planInsightChange({ id: 1, deleted: true }, { deleted: false })).toEqual({ deleted: true })
++    })
++})
++
++describe('annotations-batch-create', () => {
++    const items = Array.from({ length: 8 }, (_, i) => ({
++        content: `release note ${i}`,
++        date_marker: `2026-11-0${i + 1}T09:00:00Z`,
++        scope: 'project',
++    }))
++
++    it('creates eight annotations in one call with trimmed per-item receipts', async () => {
++        const fake = new FakePostHog({ latency: jitter(0, 2) })
++        const result = await annotationsBatchCreate(fake.context(), parse(AnnotationsBatchCreateSchema, { items }))
++        expect(result.summary).toMatchObject({ requested: 8, ok: 8, written: 8 })
++        expect(result.items[3]).toMatchObject({ index: 3, status: 'ok', content: 'release note 3', scope: 'project' })
++        expect(typeof result.items[3]!.id).toBe('number')
++        expect(fake.collection('annotations').size).toBe(8)
++    })
++
++    it('is retry-safe: a second run reports the existing annotations instead of duplicating them', async () => {
++        const fake = new FakePostHog()
++        await annotationsBatchCreate(fake.context(), parse(AnnotationsBatchCreateSchema, { items: items.slice(0, 5) }))
++        const retry = await annotationsBatchCreate(fake.context(), parse(AnnotationsBatchCreateSchema, { items }))
++        expect(retry.summary).toMatchObject({ written: 3, unchanged: 5 })
++        expect(retry.items.slice(0, 5).every((item) => item.status === 'exists')).toBe(true)
++        expect(fake.collection('annotations').size).toBe(8)
++    })
++
++    it('refuses two identical items in one batch, and the schema rejects a bad date', async () => {
++        const fake = new FakePostHog()
++        const result = await annotationsBatchCreate(
++            fake.context(),
++            parse(AnnotationsBatchCreateSchema, { items: [items[0], items[0]] })
++        )
++        expect(result.summary.written).toBe(0)
++        expect(result.items[1]!.error).toMatch(/same content/)
++        expect(
++            AnnotationsBatchCreateSchema.safeParse({ items: [{ content: 'x', date_marker: 'tuesday' }] }).success
++        ).toBe(false)
++    })
++
++    it('dry_run validates without writing', async () => {
++        const fake = new FakePostHog()
++        const result = await annotationsBatchCreate(
++            fake.context(),
++            parse(AnnotationsBatchCreateSchema, { items, dry_run: true })
++        )
++        expect(result.summary).toMatchObject({ dry_run: true, written: 0, ok: 8 })
++        expect(fake.writes()).toHaveLength(0)
++    })
++})
++
++describe('annotations-batch-delete', () => {
++    function withAnnotations(): FakePostHog {
++        const fake = new FakePostHog()
++        for (let i = 10; i < 18; i++) {
++            fake.seed('annotations', {
++                id: i,
++                content: `note ${i}`,
++                date_marker: '2026-11-03T08:30:00Z',
++                scope: 'project',
++            })
++        }
++        return fake
++    }
++
++    it('soft-deletes eight annotations in one call', async () => {
++        const fake = withAnnotations()
++        const result = await annotationsBatchDelete(fake.context(), { ids: [10, 11, 12, 13, 14, 15, 16, 17] })
++        expect(result.summary).toMatchObject({ requested: 8, ok: 8, written: 8 })
++        expect(fake.get('annotations', 12)!.deleted).toBe(true)
++        expect(result.items[0]).toMatchObject({ id: 10, status: 'ok', content: 'note 10' })
++        expect(fake.log.filter((entry) => entry.method === 'GET')).toHaveLength(0)
++    })
++
++    it('reports a missing or already deleted id as not_found without blocking the rest', async () => {
++        const fake = withAnnotations()
++        fake.externalPatch('annotations', 11, { deleted: true })
++        const result = await annotationsBatchDelete(fake.context(), { ids: [10, 11, 99] })
++        expect(result.items.map((item) => item.status)).toEqual(['ok', 'not_found', 'not_found'])
++        expect(result.summary).toMatchObject({ ok: 1, unchanged: 2, failed: 0 })
++    })
++
++    it('dry_run checks each id and deletes nothing', async () => {
++        const fake = withAnnotations()
++        const result = await annotationsBatchDelete(fake.context(), { ids: [10, 99], dry_run: true })
++        expect(result.items.map((item) => item.status)).toEqual(['would_change', 'not_found'])
++        expect(fake.writes()).toHaveLength(0)
++    })
++})
+diff --git a/services/mcp/tests/unit/atomic-concurrency.test.ts b/services/mcp/tests/unit/atomic-concurrency.test.ts
+new file mode 100644
+index 00000000000..b3dc531b368
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-concurrency.test.ts
+@@ -0,0 +1,57 @@
++import { describe, expect, it } from 'vitest'
++
++import { KeyedMutex, mapWithConcurrency } from '@/tools/atomic/concurrency'
++
++describe('KeyedMutex and mapWithConcurrency', () => {
++    it('serializes one key, runs different keys in parallel, and cleans up', async () => {
++        const mutex = new KeyedMutex()
++        const order: string[] = []
++        const task = (label: string, ms: number) => async () => {
++            order.push(`${label}:start`)
++            await new Promise((resolve) => setTimeout(resolve, ms))
++            order.push(`${label}:end`)
++        }
++        await Promise.all([
++            mutex.runExclusive('a', task('a1', 5)),
++            mutex.runExclusive('a', task('a2', 1)),
++            mutex.runExclusive('b', task('b1', 1)),
++        ])
++        expect(order.indexOf('a1:end')).toBeLessThan(order.indexOf('a2:start'))
++        expect(order.indexOf('b1:start')).toBeLessThan(order.indexOf('a1:end'))
++        expect(mutex.size).toBe(0)
++    })
++
++    it('releases the lock when a task throws', async () => {
++        const mutex = new KeyedMutex()
++        await expect(mutex.runExclusive('a', async () => Promise.reject(new Error('boom')))).rejects.toThrow('boom')
++        await expect(mutex.runExclusive('a', async () => 'ok')).resolves.toBe('ok')
++    })
++
++    it('keeps order, bounds concurrency and stops starting work on request', async () => {
++        let inFlight = 0
++        let peak = 0
++        const results = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7, 8], 3, async (n) => {
++            inFlight++
++            peak = Math.max(peak, inFlight)
++            await new Promise((resolve) => setTimeout(resolve, 2))
++            inFlight--
++            return n * 2
++        })
++        expect(results).toEqual([2, 4, 6, 8, 10, 12, 14, 16])
++        expect(peak).toBe(3)
++
++        let stop = false
++        const partial = await mapWithConcurrency(
++            [1, 2, 3, 4],
++            1,
++            async (n) => {
++                if (n === 2) {
++                    stop = true
++                }
++                return n
++            },
++            () => stop
++        )
++        expect(partial).toEqual([1, 2, undefined, undefined])
++    })
++})
+diff --git a/services/mcp/tests/unit/atomic-tools-registration.test.ts b/services/mcp/tests/unit/atomic-tools-registration.test.ts
+new file mode 100644
+index 00000000000..8d26524621f
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-tools-registration.test.ts
+@@ -0,0 +1,36 @@
++import { describe, expect, it } from 'vitest'
++
++import { TOOL_MAP } from '@/tools'
++import { ATOMIC_TOOLS } from '@/tools/atomic'
++import { getToolDefinition } from '@/tools/toolDefinitions'
++
++import toolDefinitionsAll from '../../schema/tool-definitions-all.json'
++
++/** What each tool's description must say about its guarantees. */
++const SEMANTICS: Record<string, RegExp[]> = {
++    'insights-batch-update': [/NOT all-or-nothing/, /dry_run/, /conflict/],
++    'annotations-batch-create': [/NOT all-or-nothing/, /dry_run/, /skip_duplicates/],
++    'annotations-batch-delete': [/NOT all-or-nothing/, /dry_run/, /not_found/],
++    'dashboard-create-with-insights': [/Before writing anything/, /compensating rollback/, /dry_run/],
++    'insight-update-query-partial': [/re-reads it immediately before writing/, /Remaining race window/],
++    'feature-flag-update-conditions': [/re-reads it immediately before writing/, /Remaining race window/, /version/],
++    'survey-update-question': [/re-reads it immediately before writing/, /Remaining race window/],
++}
++
++describe('atomic-write and batch tools are registered like the other hand-written tools', () => {
++    it.each(Object.keys(ATOMIC_TOOLS))(
++        '%s has a factory, a definition, api_operations and stated semantics',
++        (name) => {
++            expect(TOOL_MAP[name]).toBe(ATOMIC_TOOLS[name])
++            expect(TOOL_MAP[name]!().name).toBe(name)
++            const definition = getToolDefinition(name)
++            expect(definition.required_scopes.length).toBeGreaterThan(0)
++            expect(definition.api_operations?.length).toBeGreaterThan(0)
++            expect((toolDefinitionsAll as Record<string, unknown>)[name]).toEqual(definition)
++            expect(SEMANTICS[name]).toBeTruthy()
++            for (const pattern of SEMANTICS[name]!) {
++                expect(definition.description).toMatch(pattern)
++            }
++        }
++    )
++})
+-- 
+2.50.1 (Apple Git-155)
+

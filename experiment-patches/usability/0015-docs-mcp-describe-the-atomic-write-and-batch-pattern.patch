@@ -1,0 +1,238 @@
+From cd27c4769395169fec92b67fef8acd1e8c7c08ca Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 14:02:12 -0700
+Subject: [PATCH 15/17] docs(mcp): describe the atomic-write and batch patterns
+
+Add docs/atomic-and-batch-tools.md, a design note for the patterns
+behind the new tools, written to be reused in other MCP servers over
+REST: validation before writes, per-item results and batch semantics,
+compensating rollback, version-checked partial updates (with the race
+window that remains and the concurrency test results), and dry runs,
+plus the measured before/after on the friction-report jobs.
+
+The README now says what each new tool guarantees, including that the
+batches are best-effort rather than all-or-nothing and the race window
+the partial updates leave. src/tools/README.md points hand-written
+tools at the shared primitives.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/README.md                      |   8 +
+ services/mcp/docs/atomic-and-batch-tools.md | 166 ++++++++++++++++++++
+ services/mcp/src/tools/README.md            |   8 +
+ 3 files changed, 182 insertions(+)
+ create mode 100644 services/mcp/docs/atomic-and-batch-tools.md
+
+diff --git a/services/mcp/README.md b/services/mcp/README.md
+index 6802312ab5e..353e9016d4e 100644
+--- a/services/mcp/README.md
++++ b/services/mcp/README.md
+@@ -388,6 +388,14 @@ x-posthog-mcp-consumer: plugin
+ 
+ The header wins when both the header and the query parameter are set. Reserved values: `plugin` (AI-tool plugin installs), `posthog-code` (PostHog Desktop Tasks sandbox), `slack` (Slack integration).
+ 
++### Batches, atomic dashboards and partial updates
++
++These tools combine several REST calls into one tool call. See [docs/atomic-and-batch-tools.md](docs/atomic-and-batch-tools.md) for the design.
++
++- `insights-batch-update`, `annotations-batch-create` and `annotations-batch-delete` change up to 50 objects per call. They are **best-effort, not all-or-nothing**: every item is validated first and nothing is written if any item fails validation; after that, a failed write is reported on its item and the others are kept. Each item gets its own result, and `dry_run` validates without writing.
++- `dashboard-create-with-insights` validates every tile (running each query once by default), then creates the dashboard and its tiles. If a later step fails, it soft-deletes what it created in that call and reports what was rolled back.
++- `insight-update-query-partial`, `feature-flag-update-conditions` and `survey-update-question` change one element of a nested array (a query series, a flag condition or variant, a survey question). Each is a read-merge-write that re-reads the object just before writing and writes nothing if it changed, returning a conflict to retry. **Remaining race window:** a write from outside this server process (the PostHog UI, another server instance) that lands in the one round trip between that final check and the write can still be overwritten. Flags send their `version`, so the API refuses such a write on flags that check it, and otherwise the receipt reports `concurrent_write_detected`. Insights and surveys have no precondition in the API, so in that window nothing can detect it.
++
+ ### Data processing
+ 
+ The MCP server runs in PostHog's US and EU Kubernetes clusters and stores session state in the region you connect to.
+diff --git a/services/mcp/docs/atomic-and-batch-tools.md b/services/mcp/docs/atomic-and-batch-tools.md
+new file mode 100644
+index 00000000000..fc8f309fa2a
+--- /dev/null
++++ b/services/mcp/docs/atomic-and-batch-tools.md
+@@ -0,0 +1,166 @@
++# Atomic writes and batches in an MCP server over REST
++
++The tools in `src/tools/atomic/` let an agent do in one call what used to take one call per object:
++build a dashboard with its tiles, tag or delete many insights, create or delete many annotations,
++or change one element of a nested array.
++None of them needed a backend change: they compose the existing REST endpoints.
++That is also their main constraint.
++Separate REST calls are not a transaction, so each tool says exactly which guarantee it gives instead of claiming atomicity it cannot have.
++
++This note describes the five patterns behind them, written so they can be reused in any MCP server that sits in front of a REST API.
++
++| Tool                                                   | Pattern                                                                 | Replaces                                                              |
++| ------------------------------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
++| `insights-batch-update`                                | validate first, per-item results, dry run; version check for tag merges | one `insight-update` / `insight-delete` per insight                   |
++| `annotations-batch-create`, `annotations-batch-delete` | validate first, per-item results, dry run, retry-safe create            | one `annotation-create` / `annotation-delete` per annotation          |
++| `dashboard-create-with-insights`                       | validate first, compensating rollback, trimmed receipt, dry run         | `dashboard-create` + N × `insight-create` + `dashboard-reorder-tiles` |
++| `insight-update-query-partial`                         | version-checked partial update (JSON Patch or merge patch)              | `insight-update` with the whole query                                 |
++| `feature-flag-update-conditions`                       | version-checked partial update with the API's own precondition          | `update-feature-flag` with the whole `filters`                        |
++| `survey-update-question`                               | version-checked partial update by content fingerprint                   | `survey-update` with every question                                   |
++
++## 1. Validate everything before the first write
++
++**Problem.** A multi-object write that fails at item 7 has already saved items 1 to 6.
++If the failure was a typo the server could have spotted up front, the agent is left with a half-applied change it now has to find and repair.
++
++**Pattern.** Split every multi-object tool into a read-only validation phase and a write phase.
++The validation phase checks each item as far as it can without writing: the input schema, that each referenced object exists, what would change, and for dashboard tiles that each query runs.
++If any item fails, nothing is written and the response lists every item's problem, not just the first.
++
++**Details that matter.**
++
++- Validate nested values with the _same_ schema the single-object tool uses.
++  The tile query is checked against `insight-create`'s query schema, an annotation item is `annotation-create`'s input, and a patched survey question goes through `survey-update`'s question schema.
++  One schema with two entry points cannot drift.
++- Keep the tool's own input schema small and validate the large nested value inside the handler (`validation.ts`).
++  The dashboard tool takes `query` as a plain object, so its schema stays far below the client registry's 16 KB limit while the check is as strict as `insight-create`'s.
++- Where a cheap server-side check exists, use it.
++  `validate: "run"` runs each new tile's query once through the query API, which catches bad HogQL and bad filters that the schema cannot.
++- Report errors in terms the agent can act on: `tile 1 (Broken): query.kind: Invalid input`, not a stack trace.
++
++## 2. Per-item results, and say what kind of batch it is
++
++**Problem.** A batch that returns only "ok" or one error hides which items landed.
++A batch that claims to be atomic over separate REST calls is lying.
++
++**Pattern.** After validation, writes run best-effort with bounded concurrency (`batch.ts`).
++Every item comes back with a status (`ok`, `unchanged`, `error`, `conflict`, `skipped`, `not_attempted`, `exists`, `not_found`), a one-line `changed` receipt (`tags: [] → ["legacy"]`) or the error, and the batch returns a summary with counts.
++The summary and the tool description both say `atomic: false` and spell out the semantics: validated first, then best-effort.
++
++**Details that matter.**
++
++- Cap the batch (50 items) so one call cannot hold a request open for minutes or burst the API's rate limit.
++  The cap is in the schema, so an oversized batch is refused before any read.
++- Fan out with a fixed width (4 requests in flight) and leave rate limiting to the API client, which already retries a 429 after `Retry-After`.
++  A batch should be a polite client, not a second rate limiter.
++- `stop_on_error` stops starting new writes after the first failure; the rest come back `skipped`, so the agent knows exactly which items were never tried.
++- Make creates retry-safe.
++  A best-effort batch will be retried after a timeout, so `annotations-batch-create` matches each item against live annotations (content, date and scope) and reports `exists` with the existing id instead of creating a duplicate.
++- Make deletes idempotent.
++  An id that is already gone is `not_found`, which does not block the rest: the state the caller asked for already holds.
++- Shape receipts for the output format.
++  The exec tool prints results as TOON, which turns a list of flat, uniform objects into one table row each.
++  Keeping `changed` as a short string, rather than a nested object, is what makes 14 delete receipts cost about 470 tokens instead of a nested block per item.
++
++## 3. Compensating rollback for multi-step creates
++
++**Problem.** A dashboard with five tiles is six or more writes.
++If the fourth fails, the user is left with a dashboard missing tiles and orphaned insights.
++
++**Pattern.** Every write step records how to undo itself in a `CompensationLog` (`compensation.ts`).
++When a later step fails, the log runs the undos newest first, attempts every one even if an earlier undo fails, and produces a report.
++The error the agent receives names the failed step, what was rolled back, and anything that could not be (`ROLLBACK INCOMPLETE … must be removed by hand`).
++
++**Details that matter.**
++
++- Validate first (pattern 1), so rollback is for genuine runtime failures, not for input mistakes.
++- The undo is the API's own delete, which for dashboards and insights is a soft delete, the same as the server's delete tools.
++  An existing insight attached as a tile is detached again with a version-checked update (pattern 4), so the rollback cannot overwrite a concurrent change to that insight either.
++- Be honest about what compensation is not: between the first write and the rollback, other readers can see the partial dashboard.
++  The tool description says so.
++- Create tiles sequentially.
++  Parallel creates would be faster, but the order of tiles and the "failed at step X" report both depend on a known sequence.
++- Return a trimmed receipt (dashboard id, name, URL; per tile its position, insight id, short id and tile id) rather than echoing the dashboard.
++  Tile ids come from each insight's own `dashboard_tiles`, so no extra read is needed.
++
++## 4. Version-checked partial updates
++
++**Problem.** The REST endpoints replace nested arrays as a unit: `filters` on a flag, `questions` on a survey, `query` on an insight.
++A partial update in the MCP layer is therefore a read-merge-write, and a naive one silently overwrites any change that lands between its read and its write.
++That is the lost-update bug.
++
++**Pattern** (`versionGuard.ts`):
++
++1. Lock the object inside this server process (`KeyedMutex`), so two MCP updates of the same object through one process run one after the other.
++   The second reads the first one's result, so both land.
++2. Read the object. If the agent sent `base_version` and the object has moved on, refuse.
++3. Apply the patch to what was just read, and validate the result with the single-object tool's schema.
++4. Re-read immediately before the write and compare a fingerprint: the version marker plus the content of the fields being written.
++   Any difference means someone else wrote: write nothing and return a conflict that tells the agent to re-read and retry.
++5. Write, sending the endpoint's own precondition where it has one, and map the API's 409 to the same conflict.
++6. Where the endpoint keeps a write counter, check that the write moved it by exactly one.
++   More than one means another write landed in the window; the receipt says `concurrent_write_detected` with a warning.
++
++Address elements by stable identity, not position, wherever the API offers one: a flag condition by `condition_id`, a survey question by `id`, a variant by `key`.
++JSON Patch `test` operations let the agent assert a value before changing its neighbour.
++The receipt returns the new `version`, so the next call can send it back as `base_version`.
++
++**Version markers per endpoint** (what the API exposes today):
++
++| Object       | Marker                               | Precondition the API accepts                                        | Post-write detection |
++| ------------ | ------------------------------------ | ------------------------------------------------------------------- | -------------------- |
++| Feature flag | `version` (counter) and `updated_at` | `version` (refused with 409 for flags whose `filters.version` is 2) | yes, the counter     |
++| Insight      | `updated_at` and `last_modified_at`  | none                                                                | no                   |
++| Survey       | none exposed                         | none                                                                | no                   |
++
++For surveys the fingerprint is the content of the questions themselves, which any concurrent edit of the questions changes; the `version` the tool returns is a hash of them.
++
++### The race window that remains
++
++Steps 1 to 4 close every race except one: a writer **outside this process** (the PostHog UI, another server instance, a script) whose write lands in the single round trip between the final re-read (step 4) and the write (step 5).
++
++- **Flags.** On a flag that checks `version`, the API refuses our write: no loss.
++  On one that does not, our write is applied over theirs, and step 6 reports it, so the agent is told and can re-read: not silent.
++- **Insights and surveys.** The API has no precondition and no write counter, so in that window our write can replace theirs without either side knowing.
++  The unit test `documents the remaining race window` reproduces this deliberately.
++
++The fix for that window belongs in the backend: an `If-Match`/`version` precondition on the insight and survey PATCH, like the one flags have.
++In the MCP layer, a shared lock (for example Redis `SET NX PX` keyed by object) would extend step 1 across server instances, but it still cannot cover the UI.
++
++### What the concurrency tests show
++
++`tests/unit/atomic-version-guard.test.ts` runs two partial updates to _different_ elements of the same object at the same moment, against an in-memory backend with random 0–3 ms latency per request, 40 rounds each:
++
++| Scenario                                          | Both landed | One conflict | Race reported | Silent loss |
++| ------------------------------------------------- | ----------- | ------------ | ------------- | ----------- |
++| Same process, insight series 0 and 2              | 40          | 0            | 0             | 0           |
++| Same process, flag conditions 0 and 1             | 40          | 0            | 0             | 0           |
++| Same process, survey questions 0 and 2            | 40          | 0            | 0             | 0           |
++| Two processes, flag that checks `version`         | 0           | 40           | 0             | 0           |
++| Two processes, flag that does not check `version` | 0           | ~4           | ~36           | 0           |
++
++The test asserts zero silent losses in every scenario (the split between "conflict" and "reported" in the last row varies run to run).
++Two processes racing on an insight or a survey are not in the table, because that is exactly the window above.
++
++## 5. Dry runs
++
++Every write tool takes `dry_run: true`.
++It runs the whole validation phase, including reads and (for dashboards) query runs, computes the receipt the real call would return, and writes nothing.
++Batch items come back as `would_change`, partial updates as `status: dry_run` with the diff.
++An agent can show the user the exact change before making it, which matters most for destructive batches.
++
++## Measured effect on the friction-report jobs
++
++Calls and cl100k tokens (responses plus requests) for the same job, before with the baseline tools (from the 2026-11-10 friction ledger, live self-hosted instance) and after with the new tools (through the real `exec` tool against the in-memory backend; each "after" includes one `info` call for each new tool):
++
++| Job                                             | Calls before → after | Tokens before → after |
++| ----------------------------------------------- | -------------------- | --------------------- |
++| 1 five-tile dashboard and reorder               | 15 → 2               | 28,512 → 1,561        |
++| 2 funnel edit: add a step, -30d, rename         | 2 → 2                | 5,052 → 1,260         |
++| 3 tag 10 insights, archive 5, add 8 annotations | 25 → 4               | 16,355 → 3,102        |
++| 4 add two variants to a flag                    | 2 → 2                | 5,134 → 1,358         |
++| 7 change one survey question                    | 2 → 2                | 11,325 → 750          |
++| 10 delete 8 annotations and 14 insights         | 23 → 3               | 19,174 → 1,333        |
++
++Job 1's "before" counts the dashboard-related `info` calls, the six writes, the three prescribed re-queries and the reorder; the exploratory `query-*` calls are the same on both sides and left out.
++Most of the token saving on jobs 2, 4 and 7 is the `info` call: the partial-update tools document a patch, not the whole object.
+diff --git a/services/mcp/src/tools/README.md b/services/mcp/src/tools/README.md
+index f8164db1f79..1fb539fc9ba 100644
+--- a/services/mcp/src/tools/README.md
++++ b/services/mcp/src/tools/README.md
+@@ -53,6 +53,14 @@ Each entry in `schema/tool-definitions.json` needs a clear description, a featur
+ 
+ If you add a new feature, also list it in the feature list in `services/mcp/README.md` and add it to `tests/unit/tool-filtering.test.ts`.
+ 
++### Tools that write several objects or patch nested arrays
++
++Build them on the primitives in `atomic/` instead of hand-rolling the loop:
++`runBatch` (validate every item, then best-effort writes with per-item results and `dry_run`),
++`CompensationLog` (compensating rollback for multi-step creates) and
++`versionCheckedUpdate` (read-merge-write that re-reads and compares the version before writing).
++[docs/atomic-and-batch-tools.md](../../docs/atomic-and-batch-tools.md) explains when to use each and what each guarantees.
++
+ ## Schema Design Philosophy
+ 
+ ### Input Schemas
+-- 
+2.50.1 (Apple Git-155)
+

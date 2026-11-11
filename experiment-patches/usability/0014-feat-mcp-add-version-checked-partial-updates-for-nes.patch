@@ -1,0 +1,2188 @@
+From 4bdd79e1d5bf44bdfc80470d360d5463892017c7 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 14:02:11 -0700
+Subject: [PATCH 14/17] feat(mcp): add version-checked partial updates for
+ nested arrays
+
+Three tools change one element of a nested array without resending the
+whole object, where the baseline needed the full value resent (A16):
+
+- insight-update-query-partial: a JSON Patch (RFC 6902, with `test`
+  ops) or merge patch (RFC 7396) on an insight's query, optionally with
+  name and description in the same write; the patched query is checked
+  with insight-create's query schema before anything is written.
+- feature-flag-update-conditions: update, add or remove a release
+  condition (by condition_id, as the flag read tools compute it, or by
+  index) and a variant (by key); variant rollouts must total 100, and a
+  variant a condition forces cannot be removed.
+- survey-update-question: merge-patch one question by id or index,
+  validated with survey-update's question schema; the id cannot change.
+
+Each is a read-merge-write in the MCP layer, the pattern behind the
+lost-update bugs, so it goes through versionCheckedUpdate:
+1. an in-process lock per object serializes MCP updates of one object;
+2. read, and refuse when the agent's base_version no longer matches;
+3. apply and validate the patch;
+4. re-read just before writing and compare the version marker
+   (updated_at / last_modified_at for insights, version / updated_at for
+   flags) plus the content of the fields being written; on any change
+   write nothing and return a 409 conflict telling the agent to retry;
+5. send the API's own precondition where it has one (a flag's version;
+   the API refuses a stale one for flags with filters.version 2) and map
+   its 409 to the same conflict;
+6. for flags, check the version moved by exactly one, and report
+   concurrent_write_detected when another write landed in the window.
+
+Remaining race window, stated in each description and the README: a
+writer outside this process whose write lands in the one round trip
+between step 4 and step 5 can still be overwritten on insights and
+surveys, which have no precondition in the API. A unit test reproduces
+it on purpose.
+
+Concurrency tests run two simultaneous updates to different elements of
+one object, 40 rounds each, against a fake backend with 0-3 ms jitter:
+through the tools (one process) both always land for insights, flags
+and surveys; across two processes on a flag, every round ends with both
+landed, one conflict, or the race reported, never a silent loss.
+
+Receipts are `changed: {path: [old, new]}` plus the new version.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/tool-definitions-all.json |  58 ++
+ services/mcp/schema/tool-definitions.json     |  58 ++
+ services/mcp/src/tools/atomic/index.ts        |   8 +
+ services/mcp/src/tools/atomic/jsonPatch.ts    | 272 +++++++++
+ .../mcp/src/tools/atomic/partialUpdates.ts    | 550 ++++++++++++++++++
+ .../feature-flag-update-conditions.json       | 168 ++++++
+ .../insight-update-query-partial.json         |  97 +++
+ .../tool-schemas/survey-update-question.json  |  45 ++
+ .../mcp/tests/unit/atomic-json-patch.test.ts  |  99 ++++
+ .../tests/unit/atomic-partial-updates.test.ts | 337 +++++++++++
+ .../tests/unit/atomic-version-guard.test.ts   | 323 ++++++++++
+ 11 files changed, 2015 insertions(+)
+ create mode 100644 services/mcp/src/tools/atomic/jsonPatch.ts
+ create mode 100644 services/mcp/src/tools/atomic/partialUpdates.ts
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/feature-flag-update-conditions.json
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update-query-partial.json
+ create mode 100644 services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update-question.json
+ create mode 100644 services/mcp/tests/unit/atomic-json-patch.test.ts
+ create mode 100644 services/mcp/tests/unit/atomic-partial-updates.test.ts
+ create mode 100644 services/mcp/tests/unit/atomic-version-guard.test.ts
+
+diff --git a/services/mcp/schema/tool-definitions-all.json b/services/mcp/schema/tool-definitions-all.json
+index ff0e33aa23a..de3a9a4570c 100644
+--- a/services/mcp/schema/tool-definitions-all.json
++++ b/services/mcp/schema/tool-definitions-all.json
+@@ -7441,6 +7441,25 @@
+             "readOnlyHint": false
+         }
+     },
++    "feature-flag-update-conditions": {
++        "description": "Change one release condition or variant of a feature flag without resending the rest of `filters`. `conditions` ops: update (by condition_id from a flag read, or index) with `set` {rollout_percentage, variant, description, properties, aggregation_group_type_index}; add {condition, position?}; remove. `variants` ops: update by key {rollout_percentage, name}; add {key, rollout_percentage}; remove. Variant rollouts must add up to 100 after the change. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten. The flag's `version` is sent with the write, so the API itself refuses a stale write on flags that check it, and the receipt reports `concurrent_write_detected` when the version shows another write landed in that window. Returns `changed`, a short list of the conditions and variants, and the new `version`. `dry_run: true` shows the diff without writing.",
++        "category": "Feature flags",
++        "feature": "flags",
++        "summary": "Change one flag condition or variant, version-checked against lost updates.",
++        "title": "Update flag conditions",
++        "required_scopes": ["feature_flag:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/feature_flags/{id}/",
++            "PATCH /api/projects/{project_id}/feature_flags/{id}/"
++        ],
++        "search_keywords": ["release condition", "variant", "rollout", "multivariate", "partial update"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
+     "feature-flags-activity-retrieve": {
+         "description": "Get the audit trail for a specific feature flag by ID. Returns a paginated list of changes including who made changes, what was changed, and when. Use limit and page query params for pagination.",
+         "category": "Feature flags",
+@@ -8992,6 +9011,26 @@
+             "readOnlyHint": false
+         }
+     },
++    "insight-update-query-partial": {
++        "description": "Change part of a saved insight's query without resending all of it: a JSON Patch (`json_patch`, RFC 6902, e.g. replace /source/series/1/event or add /source/series/-) or a merge patch (`merge_patch`, RFC 7396, e.g. {\"source\":{\"dateRange\":{\"date_from\":\"-30d\"}}}). The patched query is validated with insight-create's query schema before anything is written. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten; insights have no API precondition, so nothing can detect that. Returns `changed: {path: [old, new]}` and the new `version` (updated_at). `name` and `description` can be set in the same update. `dry_run: true` shows the diff without writing. For tags or dashboards use insight-update or insights-batch-update.",
++        "category": "Product analytics",
++        "feature": "product_analytics",
++        "summary": "Patch part of an insight's query, version-checked against lost updates.",
++        "title": "Patch insight query",
++        "required_scopes": ["insight:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/{id}/",
++            "PATCH /api/projects/{project_id}/insights/{id}/"
++        ],
++        "search_keywords": ["json patch", "funnel step", "series", "partial update", "date range"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
+     "insights-activity-retrieve": {
+         "description": "Audit trail for a single insight by numeric `id`. Returns a paginated list of every change made to it (created, edited, deleted, restored), including who made each change and which fields changed. The full `before`/`after` diff blobs are omitted to keep responses agent-friendly — to inspect the current state of the insight after a change, call `insight-get` with the insight's `short_id`. Paginate with `limit` and `page`.",
+         "category": "Product analytics",
+@@ -15775,6 +15814,25 @@
+             "readOnlyHint": false
+         }
+     },
++    "survey-update-question": {
++        "description": "Change one survey question without resending the others: a merge patch (RFC 7396) on the question with `question_id` (preferred) or `question_index`, e.g. {\"question\":\"New text\"}. The patched questions are validated with survey-update's schema before anything is written. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten; surveys expose no version marker, so the check compares the questions themselves, and the receipt's `version` is a hash of them. Returns `changed` and `version`. `dry_run: true` shows the diff without writing.",
++        "category": "Surveys",
++        "feature": "surveys",
++        "summary": "Change one survey question, version-checked against lost updates.",
++        "title": "Update survey question",
++        "required_scopes": ["survey:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/surveys/{id}/",
++            "PATCH /api/projects/{project_id}/surveys/{id}/"
++        ],
++        "search_keywords": ["question text", "partial update", "survey question"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
+     "surveys-get-all": {
+         "description": "List surveys in the project. Use `search` for fuzzy match against survey name and description (handles typos and prefix-as-you-type). Use `type` to filter by survey kind (popover, widget, external_survey, api). Use `archived` to filter archived state. Combine with pagination via `limit`/`offset`.\nCompanion tools to avoid the recon-loop pattern: - For individual response rows: surveys-responses-list - For aggregate event counts: surveys-stats (single survey) or surveys-global-stats (project-wide)",
+         "category": "Surveys",
+diff --git a/services/mcp/schema/tool-definitions.json b/services/mcp/schema/tool-definitions.json
+index c6d7da3cc72..886b05efa70 100644
+--- a/services/mcp/schema/tool-definitions.json
++++ b/services/mcp/schema/tool-definitions.json
+@@ -948,5 +948,63 @@
+             "openWorldHint": true,
+             "readOnlyHint": false
+         }
++    },
++    "insight-update-query-partial": {
++        "description": "Change part of a saved insight's query without resending all of it: a JSON Patch (`json_patch`, RFC 6902, e.g. replace /source/series/1/event or add /source/series/-) or a merge patch (`merge_patch`, RFC 7396, e.g. {\"source\":{\"dateRange\":{\"date_from\":\"-30d\"}}}). The patched query is validated with insight-create's query schema before anything is written. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten; insights have no API precondition, so nothing can detect that. Returns `changed: {path: [old, new]}` and the new `version` (updated_at). `name` and `description` can be set in the same update. `dry_run: true` shows the diff without writing. For tags or dashboards use insight-update or insights-batch-update.",
++        "category": "Product analytics",
++        "feature": "product_analytics",
++        "summary": "Patch part of an insight's query, version-checked against lost updates.",
++        "title": "Patch insight query",
++        "required_scopes": ["insight:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/insights/",
++            "GET /api/projects/{project_id}/insights/{id}/",
++            "PATCH /api/projects/{project_id}/insights/{id}/"
++        ],
++        "search_keywords": ["json patch", "funnel step", "series", "partial update", "date range"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
++    "feature-flag-update-conditions": {
++        "description": "Change one release condition or variant of a feature flag without resending the rest of `filters`. `conditions` ops: update (by condition_id from a flag read, or index) with `set` {rollout_percentage, variant, description, properties, aggregation_group_type_index}; add {condition, position?}; remove. `variants` ops: update by key {rollout_percentage, name}; add {key, rollout_percentage}; remove. Variant rollouts must add up to 100 after the change. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten. The flag's `version` is sent with the write, so the API itself refuses a stale write on flags that check it, and the receipt reports `concurrent_write_detected` when the version shows another write landed in that window. Returns `changed`, a short list of the conditions and variants, and the new `version`. `dry_run: true` shows the diff without writing.",
++        "category": "Feature flags",
++        "feature": "flags",
++        "summary": "Change one flag condition or variant, version-checked against lost updates.",
++        "title": "Update flag conditions",
++        "required_scopes": ["feature_flag:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/feature_flags/{id}/",
++            "PATCH /api/projects/{project_id}/feature_flags/{id}/"
++        ],
++        "search_keywords": ["release condition", "variant", "rollout", "multivariate", "partial update"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
++    },
++    "survey-update-question": {
++        "description": "Change one survey question without resending the others: a merge patch (RFC 7396) on the question with `question_id` (preferred) or `question_index`, e.g. {\"question\":\"New text\"}. The patched questions are validated with survey-update's schema before anything is written. It is a read-merge-write guarded against lost updates: the tool reads the object, applies the change, validates it, re-reads it immediately before writing and writes only if its version marker is unchanged; otherwise it writes nothing and returns a conflict, so read the object again and retry. Pass `base_version` (from your last read or the previous receipt) to also refuse when the object changed since you read it. Remaining race window: a write from outside this server (the UI, another server instance) that lands in the one round trip between the final check and the write can still be overwritten; surveys expose no version marker, so the check compares the questions themselves, and the receipt's `version` is a hash of them. Returns `changed` and `version`. `dry_run: true` shows the diff without writing.",
++        "category": "Surveys",
++        "feature": "surveys",
++        "summary": "Change one survey question, version-checked against lost updates.",
++        "title": "Update survey question",
++        "required_scopes": ["survey:write"],
++        "api_operations": [
++            "GET /api/projects/{project_id}/surveys/{id}/",
++            "PATCH /api/projects/{project_id}/surveys/{id}/"
++        ],
++        "search_keywords": ["question text", "partial update", "survey question"],
++        "annotations": {
++            "destructiveHint": false,
++            "idempotentHint": true,
++            "openWorldHint": true,
++            "readOnlyHint": false
++        }
+     }
+ }
+diff --git a/services/mcp/src/tools/atomic/index.ts b/services/mcp/src/tools/atomic/index.ts
+index 6790181e2b2..5f935d424dd 100644
+--- a/services/mcp/src/tools/atomic/index.ts
++++ b/services/mcp/src/tools/atomic/index.ts
+@@ -11,10 +11,18 @@ import type { ToolBase, ZodObjectAny } from '@/tools/types'
+ import { annotationsBatchCreateTool, annotationsBatchDeleteTool } from './annotationsBatch'
+ import dashboardCreateWithInsights from './dashboardCreateWithInsights'
+ import insightsBatchUpdate from './insightsBatchUpdate'
++import {
++    featureFlagUpdateConditionsTool,
++    insightUpdateQueryPartialTool,
++    surveyUpdateQuestionTool,
++} from './partialUpdates'
+ 
+ export const ATOMIC_TOOLS: Record<string, () => ToolBase<ZodObjectAny>> = {
+     'insights-batch-update': insightsBatchUpdate,
+     'annotations-batch-create': annotationsBatchCreateTool,
+     'annotations-batch-delete': annotationsBatchDeleteTool,
+     'dashboard-create-with-insights': dashboardCreateWithInsights,
++    'insight-update-query-partial': insightUpdateQueryPartialTool,
++    'feature-flag-update-conditions': featureFlagUpdateConditionsTool,
++    'survey-update-question': surveyUpdateQuestionTool,
+ }
+diff --git a/services/mcp/src/tools/atomic/jsonPatch.ts b/services/mcp/src/tools/atomic/jsonPatch.ts
+new file mode 100644
+index 00000000000..cba2146eead
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/jsonPatch.ts
+@@ -0,0 +1,272 @@
++/**
++ * JSON Patch (RFC 6902) and JSON Merge Patch (RFC 7396) over plain JSON values.
++ *
++ * Both functions are pure: they clone the input and return a new document, so a patch that fails
++ * half-way leaves the caller's copy untouched. A JSON Patch is applied all-or-nothing: if any
++ * operation fails (a missing path, a failed `test`), the whole patch is rejected with the index of
++ * the failing operation, and nothing is returned.
++ *
++ * Pointer segments `__proto__`, `constructor` and `prototype` are refused, so a patch read from a
++ * tool call cannot reach an object's prototype.
++ */
++import { z } from 'zod'
++
++import { canonicalJson, isRecord } from '@/lib/plain-object'
++
++export const JsonPatchOperationSchema = z
++    .object({
++        op: z
++            .enum(['add', 'remove', 'replace', 'move', 'copy', 'test'])
++            .describe(
++                'RFC 6902 operation. `test` checks that the value at `path` equals `value` and rejects the whole patch if not.'
++            ),
++        path: z
++            .string()
++            .describe(
++                'JSON Pointer (RFC 6901) into the target, e.g. `/source/series/1/event`. `-` appends to an array.'
++            ),
++        value: z.unknown().optional().describe('The value for `add`, `replace` and `test`.'),
++        from: z.string().optional().describe('Source JSON Pointer for `move` and `copy`.'),
++    })
++    .describe('One JSON Patch operation.')
++
++export type JsonPatchOperation = z.infer<typeof JsonPatchOperationSchema>
++
++export class JsonPatchError extends Error {
++    constructor(
++        message: string,
++        public readonly operationIndex: number
++    ) {
++        super(message)
++        this.name = 'JsonPatchError'
++    }
++}
++
++const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype'])
++
++export function cloneJson<T>(value: T): T {
++    return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T)
++}
++
++export function parsePointer(pointer: string): string[] {
++    if (pointer === '') {
++        return []
++    }
++    if (!pointer.startsWith('/')) {
++        throw new Error(`JSON Pointer "${pointer}" must be empty or start with "/"`)
++    }
++    return pointer
++        .slice(1)
++        .split('/')
++        .map((segment) => {
++            const decoded = segment.replace(/~1/g, '/').replace(/~0/g, '~')
++            if (FORBIDDEN_SEGMENTS.has(decoded)) {
++                throw new Error(`JSON Pointer segment "${decoded}" is not allowed`)
++            }
++            return decoded
++        })
++}
++
++function arrayIndex(segment: string, length: number, allowEnd: boolean): number {
++    if (allowEnd && segment === '-') {
++        return length
++    }
++    if (!/^(0|[1-9][0-9]*)$/.test(segment)) {
++        throw new Error(`"${segment}" is not an array index`)
++    }
++    const index = Number(segment)
++    const max = allowEnd ? length : length - 1
++    if (index > max) {
++        throw new Error(`array index ${index} is out of range (length ${length})`)
++    }
++    return index
++}
++
++/** Returns the value at `pointer`, or throws when the path does not exist. */
++export function getAtPointer(doc: unknown, pointer: string): unknown {
++    let current: unknown = doc
++    for (const segment of parsePointer(pointer)) {
++        if (Array.isArray(current)) {
++            current = current[arrayIndex(segment, current.length, false)]
++        } else if (isRecord(current) && Object.prototype.hasOwnProperty.call(current, segment)) {
++            current = current[segment]
++        } else {
++            throw new Error(`path "${pointer}" does not exist`)
++        }
++    }
++    return current
++}
++
++/** True when `pointer` resolves in `doc`. */
++export function hasPointer(doc: unknown, pointer: string): boolean {
++    try {
++        getAtPointer(doc, pointer)
++        return true
++    } catch {
++        return false
++    }
++}
++
++type Parent = { container: unknown[] | Record<string, unknown>; key: string }
++
++function resolveParent(doc: unknown, pointer: string): Parent {
++    const segments = parsePointer(pointer)
++    if (segments.length === 0) {
++        throw new Error('the root cannot be the target of this operation')
++    }
++    const key = segments[segments.length - 1]!
++    const parentPointer = segments
++        .slice(0, -1)
++        .map((s) => '/' + s.replace(/~/g, '~0').replace(/\//g, '~1'))
++        .join('')
++    const container = getAtPointer(doc, parentPointer)
++    if (!Array.isArray(container) && !isRecord(container)) {
++        throw new Error(`the parent of "${pointer}" is not an object or array`)
++    }
++    return { container, key }
++}
++
++function addValue(doc: unknown, pointer: string, value: unknown): unknown {
++    if (pointer === '') {
++        return value
++    }
++    const { container, key } = resolveParent(doc, pointer)
++    if (Array.isArray(container)) {
++        container.splice(arrayIndex(key, container.length, true), 0, value)
++    } else {
++        container[key] = value
++    }
++    return doc
++}
++
++function removeValue(doc: unknown, pointer: string): unknown {
++    const { container, key } = resolveParent(doc, pointer)
++    if (Array.isArray(container)) {
++        container.splice(arrayIndex(key, container.length, false), 1)
++    } else {
++        if (!Object.prototype.hasOwnProperty.call(container, key)) {
++            throw new Error(`path "${pointer}" does not exist`)
++        }
++        delete container[key]
++    }
++    return doc
++}
++
++/** Applies an RFC 6902 patch to a clone of `doc`. All operations apply, or none do. */
++export function applyJsonPatch(doc: unknown, operations: readonly JsonPatchOperation[]): unknown {
++    let working = cloneJson(doc)
++    operations.forEach((operation, index) => {
++        try {
++            switch (operation.op) {
++                case 'add':
++                    working = addValue(working, operation.path, cloneJson(operation.value))
++                    break
++                case 'remove':
++                    working = removeValue(working, operation.path)
++                    break
++                case 'replace':
++                    if (operation.path === '') {
++                        working = cloneJson(operation.value)
++                        break
++                    }
++                    getAtPointer(working, operation.path)
++                    working = removeValue(working, operation.path)
++                    working = addValue(working, operation.path, cloneJson(operation.value))
++                    break
++                case 'move': {
++                    if (operation.from === undefined) {
++                        throw new Error('`move` needs `from`')
++                    }
++                    if (operation.path.startsWith(operation.from + '/')) {
++                        throw new Error('cannot move a value into one of its own children')
++                    }
++                    const moved = getAtPointer(working, operation.from)
++                    working = removeValue(working, operation.from)
++                    working = addValue(working, operation.path, moved)
++                    break
++                }
++                case 'copy': {
++                    if (operation.from === undefined) {
++                        throw new Error('`copy` needs `from`')
++                    }
++                    working = addValue(working, operation.path, cloneJson(getAtPointer(working, operation.from)))
++                    break
++                }
++                case 'test': {
++                    const actual = getAtPointer(working, operation.path)
++                    if (canonicalJson(actual) !== canonicalJson(operation.value)) {
++                        throw new Error(`test failed: the value at "${operation.path}" is ${canonicalJson(actual)}`)
++                    }
++                    break
++                }
++            }
++        } catch (error) {
++            const reason = error instanceof Error ? error.message : String(error)
++            throw new JsonPatchError(`operation ${index} (${operation.op} ${operation.path}): ${reason}`, index)
++        }
++    })
++    return working
++}
++
++/** Applies an RFC 7396 merge patch: objects merge key by key, `null` deletes a key, anything else replaces. */
++export function applyMergePatch(target: unknown, patch: unknown): unknown {
++    if (!isRecord(patch)) {
++        return cloneJson(patch)
++    }
++    const result: Record<string, unknown> = isRecord(target) ? cloneJson(target) : {}
++    for (const [key, value] of Object.entries(patch)) {
++        if (FORBIDDEN_SEGMENTS.has(key)) {
++            throw new Error(`merge patch key "${key}" is not allowed`)
++        }
++        if (value === null) {
++            delete result[key]
++        } else {
++            result[key] = applyMergePatch(result[key], value)
++        }
++    }
++    return result
++}
++
++/**
++ * Leaf-level differences between two JSON values, as `{pointer: [before, after]}`.
++ * Stops after `limit` entries so a large rewrite cannot flood a receipt; `truncated` says so.
++ */
++export function diffJson(
++    before: unknown,
++    after: unknown,
++    limit = 20
++): { changes: Record<string, [unknown, unknown]>; truncated: boolean } {
++    const changes: Record<string, [unknown, unknown]> = {}
++    let count = 0
++    let truncated = false
++    const escape = (s: string): string => s.replace(/~/g, '~0').replace(/\//g, '~1')
++    const walk = (a: unknown, b: unknown, pointer: string): void => {
++        if (truncated || canonicalJson(a) === canonicalJson(b)) {
++            return
++        }
++        const bothArrays = Array.isArray(a) && Array.isArray(b)
++        const bothObjects = isRecord(a) && isRecord(b)
++        if (bothArrays) {
++            const length = Math.max(a.length, b.length)
++            for (let i = 0; i < length; i++) {
++                walk(a[i], b[i], `${pointer}/${i}`)
++            }
++            return
++        }
++        if (bothObjects) {
++            const keys = new Set([...Object.keys(a), ...Object.keys(b)])
++            for (const key of [...keys].sort()) {
++                walk(a[key], b[key], `${pointer}/${escape(key)}`)
++            }
++            return
++        }
++        if (count >= limit) {
++            truncated = true
++            return
++        }
++        changes[pointer || '/'] = [a ?? null, b ?? null]
++        count++
++    }
++    walk(before, after, '')
++    return { changes, truncated }
++}
+diff --git a/services/mcp/src/tools/atomic/partialUpdates.ts b/services/mcp/src/tools/atomic/partialUpdates.ts
+new file mode 100644
+index 00000000000..01a310e6739
+--- /dev/null
++++ b/services/mcp/src/tools/atomic/partialUpdates.ts
+@@ -0,0 +1,550 @@
++/**
++ * Partial updates of nested arrays, each a version-checked read-merge-write (see versionGuard.ts):
++ *
++ * - insight-update-query-partial: a JSON Patch (RFC 6902) or merge patch (RFC 7396) on an insight's
++ *   `query`, e.g. change one funnel step or one trend series.
++ * - feature-flag-update-conditions: change, add or remove one release condition (by condition_id or
++ *   index) or one variant (by key), without resending the rest of `filters`.
++ * - survey-update-question: merge-patch one survey question (by id or index).
++ *
++ * Each reads the object, applies the change, validates the result, re-reads and compares the
++ * version marker, and only then writes. A change since the agent's `base_version`, or since the
++ * read, returns a conflict and writes nothing. The receipt lists what changed as `{path: [old, new]}`
++ * and the new `version` to send as `base_version` next time.
++ */
++import { z } from 'zod'
++
++import * as insightSchemas from '@/generated/product_analytics/api'
++import * as surveySchemas from '@/generated/surveys/api'
++import { ToolInputValidationError } from '@/lib/errors'
++import { canonicalJson, isRecord } from '@/lib/plain-object'
++import { flagLevelGroupIndex } from '@/tools/featureFlags/aggregation'
++import { conditionId } from '@/tools/featureFlags/conditionIds'
++import type { Context, ToolBase } from '@/tools/types'
++
++import { applyJsonPatch, applyMergePatch, cloneJson, diffJson, JsonPatchOperationSchema } from './jsonPatch'
++import {
++    type ApiObject,
++    appUrl,
++    featureFlagResource,
++    insightResource,
++    resolveInsightId,
++    surveyQuestionsVersion,
++    surveyResource,
++} from './resources'
++import { formatIssues, validateInsightQuery } from './validation'
++import { versionCheckedUpdate, type GuardedUpdateResult } from './versionGuard'
++
++export interface PartialUpdateReceipt {
++    status: 'ok' | 'unchanged' | 'dry_run'
++    id: number | string
++    name?: string | null
++    key?: string
++    changed: Record<string, [unknown, unknown]>
++    changed_truncated?: boolean
++    version: string | number | null
++    concurrent_write_detected?: boolean
++    warning?: string
++    url: string
++    [extra: string]: unknown
++}
++
++const BaseVersion = z
++    .union([z.string(), z.number()])
++    .optional()
++    .describe(
++        "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
++    )
++
++const DryRun = z.boolean().optional().describe('Apply and validate the change and show the diff, without writing.')
++
++function receipt<T extends ApiObject>(
++    result: GuardedUpdateResult<T>,
++    fields: readonly string[],
++    version: (object: T) => string | number | null | undefined
++): Pick<
++    PartialUpdateReceipt,
++    'status' | 'changed' | 'changed_truncated' | 'version' | 'concurrent_write_detected' | 'warning'
++> {
++    const changed: Record<string, [unknown, unknown]> = {}
++    let truncated = false
++    if (result.status !== 'unchanged') {
++        for (const field of fields) {
++            if (result.body && !(field in result.body)) {
++                continue
++            }
++            const after = result.after ? result.after[field] : result.body?.[field]
++            const diff = diffJson(result.before[field], after)
++            truncated ||= diff.truncated
++            for (const [path, pair] of Object.entries(diff.changes)) {
++                changed[`/${field}${path === '/' ? '' : path}`] = pair
++            }
++        }
++    }
++    return {
++        status: result.status,
++        changed,
++        ...(truncated ? { changed_truncated: true } : {}),
++        version: (result.after ? version(result.after) : version(result.before)) ?? null,
++        ...(result.concurrentWriteDetected ? { concurrent_write_detected: true, warning: result.warning } : {}),
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// insight-update-query-partial
++
++const insightBody = insightSchemas.InsightsPartialUpdateBody().shape
++
++export const InsightUpdateQueryPartialSchema = z
++    .object({
++        id: z.union([z.number().int(), z.string().min(1)]).describe('Insight id or short_id.'),
++        json_patch: z
++            .array(JsonPatchOperationSchema)
++            .min(1)
++            .max(50)
++            .optional()
++            .describe(
++                'RFC 6902 operations on the insight\'s `query`, e.g. [{"op":"replace","path":"/source/series/1/event","value":"signup"}] or [{"op":"add","path":"/source/series/-","value":{"kind":"EventsNode","event":"purchase"}}]. Add a `test` op to assert a value first. Use this to change one array element.'
++            ),
++        merge_patch: z
++            .record(z.string(), z.unknown())
++            .optional()
++            .describe(
++                'RFC 7396 merge patch on `query`, e.g. {"source":{"dateRange":{"date_from":"-30d"}}}. null removes a key. Arrays are replaced whole, so use json_patch for one element.'
++            ),
++        name: insightBody.name.describe('New name, written in the same version-checked update.'),
++        description: insightBody.description.describe('New description, written in the same update.'),
++        base_version: BaseVersion,
++        dry_run: DryRun,
++    })
++    .superRefine((value, ctx) => {
++        if (value.json_patch !== undefined && value.merge_patch !== undefined) {
++            ctx.addIssue({ code: 'custom', message: 'give json_patch or merge_patch, not both' })
++        }
++        if ([value.json_patch, value.merge_patch, value.name, value.description].every((v) => v === undefined)) {
++            ctx.addIssue({ code: 'custom', message: 'give json_patch, merge_patch, name or description' })
++        }
++    })
++
++export async function insightUpdateQueryPartial(
++    context: Context,
++    params: z.infer<typeof InsightUpdateQueryPartialSchema>
++): Promise<PartialUpdateReceipt> {
++    const projectId = await context.stateManager.getProjectId()
++    const id = await resolveInsightId(context, projectId, params.id)
++    const resource = insightResource(context, projectId, id)
++    const result = await versionCheckedUpdate(
++        resource,
++        (current) => {
++            const body: Record<string, unknown> = {}
++            if (params.json_patch !== undefined || params.merge_patch !== undefined) {
++                if (!isRecord(current.query)) {
++                    throw new ToolInputValidationError(
++                        `Insight ${id} has no query to patch (it may be a legacy filters-only insight). Use insight-update.`
++                    )
++                }
++                let next: unknown
++                try {
++                    next = params.json_patch
++                        ? applyJsonPatch(current.query, params.json_patch)
++                        : applyMergePatch(current.query, params.merge_patch)
++                } catch (error) {
++                    const reason = error instanceof Error ? error.message : String(error)
++                    throw new ToolInputValidationError(
++                        `The patch does not apply to insight ${id}'s query: ${reason}. Nothing was written.`
++                    )
++                }
++                const invalid = validateInsightQuery(next)
++                if (invalid) {
++                    throw new ToolInputValidationError(
++                        `The patched query is not valid: ${invalid}. Nothing was written.`
++                    )
++                }
++                if (canonicalJson(current.query) !== canonicalJson(next)) {
++                    body.query = next
++                }
++            }
++            for (const field of ['name', 'description'] as const) {
++                if (params[field] !== undefined && params[field] !== current[field]) {
++                    body[field] = params[field]
++                }
++            }
++            return Object.keys(body).length > 0 ? { body } : { unchanged: true }
++        },
++        { baseVersion: params.base_version, dryRun: params.dry_run }
++    )
++    const insight = result.after ?? result.before
++    return {
++        id,
++        name: (insight.name as string | null | undefined) ?? null,
++        short_id: insight.short_id,
++        ...receipt(result, ['query', 'name', 'description'], resource.agentVersion),
++        url: await appUrl(context, `/insights/${insight.short_id as string}`),
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// feature-flag-update-conditions
++
++const ConditionRef = {
++    condition_id: z
++        .string()
++        .optional()
++        .describe('The condition_id a flag read returned. Preferred: it survives reordering.'),
++    index: z.number().int().min(0).optional().describe('Position in filters.groups, from 0.'),
++}
++
++const ConditionFields = z
++    .object({
++        rollout_percentage: z
++            .number()
++            .min(0)
++            .max(100)
++            .nullable()
++            .optional()
++            .describe('Rollout for this condition, 0-100.'),
++        variant: z
++            .string()
++            .nullable()
++            .optional()
++            .describe('Force this variant key for matching users; null clears it.'),
++        description: z.string().nullable().optional().describe('Condition description.'),
++        properties: z
++            .array(z.record(z.string(), z.unknown()))
++            .optional()
++            .describe('Replace the property filters of this condition (each with key, value, operator, type).'),
++        aggregation_group_type_index: z.number().int().nullable().optional().describe('Group type to aggregate on.'),
++    })
++    .strict()
++
++const ConditionOpSchema = z
++    .object({
++        op: z
++            .enum(['update', 'add', 'remove'])
++            .describe('update and remove name a condition; add inserts `set` as a new one.'),
++        ...ConditionRef,
++        position: z.number().int().min(0).optional().describe('add only: insert at this index; default is the end.'),
++        set: ConditionFields.optional().describe(
++            'update: the fields to change, others stay. add: the new condition (properties default to [], rollout to 100).'
++        ),
++    })
++    .strict()
++    .superRefine((op, ctx) => {
++        const named = op.condition_id !== undefined || op.index !== undefined
++        if (op.op !== 'add' && !named) {
++            ctx.addIssue({ code: 'custom', message: `${op.op} needs condition_id or index` })
++        }
++        if (op.op !== 'remove' && op.set === undefined) {
++            ctx.addIssue({ code: 'custom', path: ['set'], message: `${op.op} needs set` })
++        }
++    })
++    .describe('One change to the release conditions.')
++
++const VariantOpSchema = z
++    .object({
++        op: z.enum(['update', 'add', 'remove']).describe('What to do with the variant named by key.'),
++        key: z.string().min(1).describe('Variant key.'),
++        rollout_percentage: z.number().min(0).max(100).optional().describe('Share of users, 0-100. Required for add.'),
++        name: z.string().nullable().optional().describe('Variant description.'),
++    })
++    .strict()
++    .superRefine((op, ctx) => {
++        if (op.op === 'add' && op.rollout_percentage === undefined) {
++            ctx.addIssue({ code: 'custom', path: ['rollout_percentage'], message: 'add needs rollout_percentage' })
++        }
++    })
++    .describe('One change to the multivariate variants.')
++
++export const FeatureFlagUpdateConditionsSchema = z
++    .object({
++        id: z.number().int().describe('Feature flag id.'),
++        conditions: z
++            .array(ConditionOpSchema)
++            .max(20)
++            .optional()
++            .describe('Changes to release conditions, applied in order.'),
++        variants: z
++            .array(VariantOpSchema)
++            .max(20)
++            .optional()
++            .describe('Changes to multivariate variants, applied in order. Rollouts must add up to 100 afterwards.'),
++        base_version: BaseVersion,
++        dry_run: DryRun,
++    })
++    .superRefine((value, ctx) => {
++        if (!value.conditions?.length && !value.variants?.length) {
++            ctx.addIssue({ code: 'custom', message: 'give at least one change in conditions or variants' })
++        }
++    })
++
++type FlagParams = z.infer<typeof FeatureFlagUpdateConditionsSchema>
++
++function findCondition(
++    groups: ApiObject[],
++    flagLevel: number | undefined,
++    ref: { condition_id?: string | undefined; index?: number | undefined }
++): number {
++    if (ref.condition_id !== undefined) {
++        const at = groups.findIndex((group) => conditionId(group, flagLevel) === ref.condition_id)
++        if (at < 0) {
++            throw new ToolInputValidationError(
++                `No condition has condition_id ${ref.condition_id}; the flag may have changed since you read it. Read it again.`
++            )
++        }
++        return at
++    }
++    if (ref.index !== undefined) {
++        if (ref.index >= groups.length) {
++            throw new ToolInputValidationError(
++                `Condition index ${ref.index} is out of range (the flag has ${groups.length}).`
++            )
++        }
++        return ref.index
++    }
++    throw new ToolInputValidationError('Name the condition with condition_id or index.')
++}
++
++const withoutUndefined = (object: Record<string, unknown>): Record<string, unknown> =>
++    Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined))
++
++/** The new `filters`, from the flag as it is now. Exported for tests. */
++export function planFlagFilters(flag: ApiObject, params: Pick<FlagParams, 'conditions' | 'variants'>): ApiObject {
++    const filters = isRecord(flag.filters) ? (cloneJson(flag.filters) as ApiObject) : {}
++    const flagLevel = flagLevelGroupIndex(filters)
++    // Ids are computed on the stored conditions once, before any edit moves them.
++    const groups = (Array.isArray(filters.groups) ? filters.groups : []).filter(isRecord).map((group) => {
++        const { condition_id: _drop, ...rest } = group
++        return rest
++    })
++    const ids = groups.map((group) => conditionId(group, flagLevel))
++    const resolve = (ref: { condition_id?: string | undefined; index?: number | undefined }): number => {
++        if (ref.condition_id !== undefined) {
++            const at = ids.indexOf(ref.condition_id)
++            if (at < 0) {
++                return findCondition(groups, flagLevel, ref)
++            }
++            return at
++        }
++        return findCondition(groups, flagLevel, ref)
++    }
++    for (const op of params.conditions ?? []) {
++        if (op.op === 'update') {
++            const at = resolve(op)
++            groups[at] = { ...groups[at], ...withoutUndefined({ ...op.set }) }
++        } else if (op.op === 'add') {
++            const position = op.position ?? groups.length
++            const condition = withoutUndefined({ properties: [], rollout_percentage: 100, ...op.set })
++            groups.splice(Math.min(position, groups.length), 0, condition)
++            ids.splice(Math.min(position, ids.length), 0, '')
++        } else {
++            const at = resolve(op)
++            groups.splice(at, 1)
++            ids.splice(at, 1)
++        }
++    }
++    filters.groups = groups
++
++    if (params.variants?.length) {
++        const multivariate = isRecord(filters.multivariate) ? filters.multivariate : { variants: [] }
++        const variants = (Array.isArray(multivariate.variants) ? multivariate.variants : []).filter(isRecord)
++        for (const op of params.variants) {
++            const at = variants.findIndex((variant) => variant.key === op.key)
++            if (op.op === 'add') {
++                if (at >= 0) {
++                    throw new ToolInputValidationError(`Variant ${op.key} already exists. Use op "update".`)
++                }
++                variants.push(
++                    withoutUndefined({ key: op.key, name: op.name, rollout_percentage: op.rollout_percentage })
++                )
++                continue
++            }
++            if (at < 0) {
++                throw new ToolInputValidationError(`No variant with key ${op.key}.`)
++            }
++            if (op.op === 'update') {
++                variants[at] = {
++                    ...variants[at],
++                    ...withoutUndefined({ rollout_percentage: op.rollout_percentage, name: op.name }),
++                }
++            } else {
++                variants.splice(at, 1)
++                for (const group of groups) {
++                    if (group.variant === op.key) {
++                        throw new ToolInputValidationError(
++                            `Variant ${op.key} is forced by a release condition. Change or remove that condition's variant first.`
++                        )
++                    }
++                }
++            }
++        }
++        if (variants.length > 0) {
++            const total = variants.reduce((sum, variant) => sum + Number(variant.rollout_percentage ?? 0), 0)
++            if (Math.abs(total - 100) > 1e-9) {
++                throw new ToolInputValidationError(
++                    `Variant rollouts add up to ${total}, not 100: ${variants.map((v) => `${String(v.key)}=${String(v.rollout_percentage)}`).join(', ')}. Adjust them in the same call.`
++                )
++            }
++            filters.multivariate = { ...multivariate, variants }
++        } else {
++            filters.multivariate = null
++        }
++    }
++    for (const group of groups) {
++        if (typeof group.variant === 'string' && group.variant !== '') {
++            const known =
++                isRecord(filters.multivariate) && Array.isArray(filters.multivariate.variants)
++                    ? filters.multivariate.variants.some(
++                          (variant) => isRecord(variant) && variant.key === group.variant
++                      )
++                    : false
++            if (!known) {
++                throw new ToolInputValidationError(
++                    `A condition forces variant ${group.variant}, which the flag does not have.`
++                )
++            }
++        }
++    }
++    return filters
++}
++
++export async function featureFlagUpdateConditions(context: Context, params: FlagParams): Promise<PartialUpdateReceipt> {
++    const projectId = await context.stateManager.getProjectId()
++    const resource = featureFlagResource(context, projectId, params.id)
++    const result = await versionCheckedUpdate(
++        resource,
++        (current) => {
++            const next = planFlagFilters(current, params)
++            return canonicalJson(next) === canonicalJson(current.filters)
++                ? { unchanged: true }
++                : { body: { filters: next } }
++        },
++        { baseVersion: params.base_version, dryRun: params.dry_run }
++    )
++    const flag = result.after ?? result.before
++    const filters = (result.after?.filters ?? result.body?.filters ?? result.before.filters) as ApiObject | undefined
++    const flagLevel = filters ? flagLevelGroupIndex(filters) : undefined
++    return {
++        id: params.id,
++        key: flag.key as string,
++        ...receipt(result, ['filters'], resource.agentVersion),
++        conditions: (Array.isArray(filters?.groups) ? filters.groups : []).filter(isRecord).map((group) => ({
++            condition_id: conditionId(group, flagLevel),
++            rollout_percentage: group.rollout_percentage ?? null,
++            ...(group.variant ? { variant: group.variant } : {}),
++            properties: Array.isArray(group.properties) ? group.properties.length : 0,
++        })),
++        ...(isRecord(filters?.multivariate) && Array.isArray(filters.multivariate.variants)
++            ? {
++                  variants: filters.multivariate.variants
++                      .filter(isRecord)
++                      .map((variant) => ({ key: variant.key, rollout_percentage: variant.rollout_percentage })),
++              }
++            : {}),
++        url: await appUrl(context, `/feature-flags/${params.id}`),
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// survey-update-question
++
++export const SurveyUpdateQuestionSchema = z
++    .object({
++        id: z.string().min(1).describe('Survey id.'),
++        question_id: z
++            .string()
++            .optional()
++            .describe("The question's id from a survey read. Preferred over question_index."),
++        question_index: z.number().int().min(0).optional().describe('Position in questions, from 0.'),
++        patch: z
++            .record(z.string(), z.unknown())
++            .describe(
++                'Merge patch (RFC 7396) on that one question, e.g. {"question":"New text"} or {"choices":["A","B"]}. null removes a key. The question id cannot change.'
++            ),
++        base_version: BaseVersion,
++        dry_run: DryRun,
++    })
++    .superRefine((value, ctx) => {
++        if ((value.question_id === undefined) === (value.question_index === undefined)) {
++            ctx.addIssue({ code: 'custom', message: 'give exactly one of question_id or question_index' })
++        }
++        if ('id' in value.patch) {
++            ctx.addIssue({ code: 'custom', path: ['patch', 'id'], message: 'a question id cannot be changed' })
++        }
++    })
++
++let questionsSchema: z.ZodType | undefined
++function getQuestionsSchema(): z.ZodType {
++    questionsSchema ??= surveySchemas.SurveysPartialUpdateBody().shape.questions as z.ZodType
++    return questionsSchema
++}
++
++export async function surveyUpdateQuestion(
++    context: Context,
++    params: z.infer<typeof SurveyUpdateQuestionSchema>
++): Promise<PartialUpdateReceipt> {
++    const projectId = await context.stateManager.getProjectId()
++    const resource = surveyResource(context, projectId, params.id)
++    const result = await versionCheckedUpdate(
++        resource,
++        (current) => {
++            const questions = (Array.isArray(current.questions) ? cloneJson(current.questions) : []) as unknown[]
++            const at =
++                params.question_id !== undefined
++                    ? questions.findIndex((question) => isRecord(question) && question.id === params.question_id)
++                    : params.question_index!
++            if (at < 0 || at >= questions.length) {
++                throw new ToolInputValidationError(
++                    params.question_id !== undefined
++                        ? `Survey ${params.id} has no question with id ${params.question_id}. Read the survey again.`
++                        : `Question index ${params.question_index} is out of range (the survey has ${questions.length}).`
++                )
++            }
++            questions[at] = applyMergePatch(questions[at], params.patch)
++            const parsed = getQuestionsSchema().safeParse(questions)
++            if (!parsed.success) {
++                throw new ToolInputValidationError(
++                    `The patched question is not valid: ${formatIssues(parsed.error, ['questions'])}. Nothing was written.`
++                )
++            }
++            return canonicalJson(questions) === canonicalJson(current.questions)
++                ? { unchanged: true }
++                : { body: { questions } }
++        },
++        { baseVersion: params.base_version, dryRun: params.dry_run }
++    )
++    const survey = result.after ?? result.before
++    return {
++        id: params.id,
++        name: (survey.name as string | null | undefined) ?? null,
++        ...receipt(result, ['questions'], surveyQuestionsVersion),
++        // A dry run has not written, so its version is still the one read.
++        ...(result.status === 'dry_run' ? { version: surveyQuestionsVersion(result.before) } : {}),
++        url: await appUrl(context, `/surveys/${params.id}`),
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++
++export const insightUpdateQueryPartialTool = (): ToolBase<
++    typeof InsightUpdateQueryPartialSchema,
++    PartialUpdateReceipt
++> => ({
++    name: 'insight-update-query-partial',
++    schema: InsightUpdateQueryPartialSchema,
++    handler: insightUpdateQueryPartial,
++})
++
++export const featureFlagUpdateConditionsTool = (): ToolBase<
++    typeof FeatureFlagUpdateConditionsSchema,
++    PartialUpdateReceipt
++> => ({
++    name: 'feature-flag-update-conditions',
++    schema: FeatureFlagUpdateConditionsSchema,
++    handler: featureFlagUpdateConditions,
++})
++
++export const surveyUpdateQuestionTool = (): ToolBase<typeof SurveyUpdateQuestionSchema, PartialUpdateReceipt> => ({
++    name: 'survey-update-question',
++    schema: SurveyUpdateQuestionSchema,
++    handler: surveyUpdateQuestion,
++})
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/feature-flag-update-conditions.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/feature-flag-update-conditions.json
+new file mode 100644
+index 00000000000..7f71bb1c713
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/feature-flag-update-conditions.json
+@@ -0,0 +1,168 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "base_version": {
++            "anyOf": [
++                {
++                    "type": "string"
++                },
++                {
++                    "type": "number"
++                }
++            ],
++            "description": "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
++        },
++        "conditions": {
++            "description": "Changes to release conditions, applied in order.",
++            "items": {
++                "additionalProperties": false,
++                "description": "One change to the release conditions.",
++                "properties": {
++                    "condition_id": {
++                        "description": "The condition_id a flag read returned. Preferred: it survives reordering.",
++                        "type": "string"
++                    },
++                    "index": {
++                        "description": "Position in filters.groups, from 0.",
++                        "maximum": 9007199254740991,
++                        "minimum": 0,
++                        "type": "integer"
++                    },
++                    "op": {
++                        "description": "update and remove name a condition; add inserts `set` as a new one.",
++                        "enum": ["update", "add", "remove"],
++                        "type": "string"
++                    },
++                    "position": {
++                        "description": "add only: insert at this index; default is the end.",
++                        "maximum": 9007199254740991,
++                        "minimum": 0,
++                        "type": "integer"
++                    },
++                    "set": {
++                        "additionalProperties": false,
++                        "description": "update: the fields to change, others stay. add: the new condition (properties default to [], rollout to 100).",
++                        "properties": {
++                            "aggregation_group_type_index": {
++                                "anyOf": [
++                                    {
++                                        "maximum": 9007199254740991,
++                                        "minimum": -9007199254740991,
++                                        "type": "integer"
++                                    },
++                                    {
++                                        "type": "null"
++                                    }
++                                ],
++                                "description": "Group type to aggregate on."
++                            },
++                            "description": {
++                                "anyOf": [
++                                    {
++                                        "type": "string"
++                                    },
++                                    {
++                                        "type": "null"
++                                    }
++                                ],
++                                "description": "Condition description."
++                            },
++                            "properties": {
++                                "description": "Replace the property filters of this condition (each with key, value, operator, type).",
++                                "items": {
++                                    "additionalProperties": {},
++                                    "propertyNames": {
++                                        "type": "string"
++                                    },
++                                    "type": "object"
++                                },
++                                "type": "array"
++                            },
++                            "rollout_percentage": {
++                                "anyOf": [
++                                    {
++                                        "maximum": 100,
++                                        "minimum": 0,
++                                        "type": "number"
++                                    },
++                                    {
++                                        "type": "null"
++                                    }
++                                ],
++                                "description": "Rollout for this condition, 0-100."
++                            },
++                            "variant": {
++                                "anyOf": [
++                                    {
++                                        "type": "string"
++                                    },
++                                    {
++                                        "type": "null"
++                                    }
++                                ],
++                                "description": "Force this variant key for matching users; null clears it."
++                            }
++                        },
++                        "type": "object"
++                    }
++                },
++                "required": ["op"],
++                "type": "object"
++            },
++            "maxItems": 20,
++            "type": "array"
++        },
++        "dry_run": {
++            "description": "Apply and validate the change and show the diff, without writing.",
++            "type": "boolean"
++        },
++        "id": {
++            "description": "Feature flag id.",
++            "maximum": 9007199254740991,
++            "minimum": -9007199254740991,
++            "type": "integer"
++        },
++        "variants": {
++            "description": "Changes to multivariate variants, applied in order. Rollouts must add up to 100 afterwards.",
++            "items": {
++                "additionalProperties": false,
++                "description": "One change to the multivariate variants.",
++                "properties": {
++                    "key": {
++                        "description": "Variant key.",
++                        "minLength": 1,
++                        "type": "string"
++                    },
++                    "name": {
++                        "anyOf": [
++                            {
++                                "type": "string"
++                            },
++                            {
++                                "type": "null"
++                            }
++                        ],
++                        "description": "Variant description."
++                    },
++                    "op": {
++                        "description": "What to do with the variant named by key.",
++                        "enum": ["update", "add", "remove"],
++                        "type": "string"
++                    },
++                    "rollout_percentage": {
++                        "description": "Share of users, 0-100. Required for add.",
++                        "maximum": 100,
++                        "minimum": 0,
++                        "type": "number"
++                    }
++                },
++                "required": ["op", "key"],
++                "type": "object"
++            },
++            "maxItems": 20,
++            "type": "array"
++        }
++    },
++    "required": ["id"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update-query-partial.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update-query-partial.json
+new file mode 100644
+index 00000000000..22d78c669f7
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/insight-update-query-partial.json
+@@ -0,0 +1,97 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "base_version": {
++            "anyOf": [
++                {
++                    "type": "string"
++                },
++                {
++                    "type": "number"
++                }
++            ],
++            "description": "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
++        },
++        "description": {
++            "anyOf": [
++                {
++                    "maxLength": 400,
++                    "type": "string"
++                },
++                {
++                    "type": "null"
++                }
++            ],
++            "description": "New description, written in the same update."
++        },
++        "dry_run": {
++            "description": "Apply and validate the change and show the diff, without writing.",
++            "type": "boolean"
++        },
++        "id": {
++            "anyOf": [
++                {
++                    "maximum": 9007199254740991,
++                    "minimum": -9007199254740991,
++                    "type": "integer"
++                },
++                {
++                    "minLength": 1,
++                    "type": "string"
++                }
++            ],
++            "description": "Insight id or short_id."
++        },
++        "json_patch": {
++            "description": "RFC 6902 operations on the insight's `query`, e.g. [{\"op\":\"replace\",\"path\":\"/source/series/1/event\",\"value\":\"signup\"}] or [{\"op\":\"add\",\"path\":\"/source/series/-\",\"value\":{\"kind\":\"EventsNode\",\"event\":\"purchase\"}}]. Add a `test` op to assert a value first. Use this to change one array element.",
++            "items": {
++                "description": "One JSON Patch operation.",
++                "properties": {
++                    "from": {
++                        "description": "Source JSON Pointer for `move` and `copy`.",
++                        "type": "string"
++                    },
++                    "op": {
++                        "description": "RFC 6902 operation. `test` checks that the value at `path` equals `value` and rejects the whole patch if not.",
++                        "enum": ["add", "remove", "replace", "move", "copy", "test"],
++                        "type": "string"
++                    },
++                    "path": {
++                        "description": "JSON Pointer (RFC 6901) into the target, e.g. `/source/series/1/event`. `-` appends to an array.",
++                        "type": "string"
++                    },
++                    "value": {
++                        "description": "The value for `add`, `replace` and `test`."
++                    }
++                },
++                "required": ["op", "path"],
++                "type": "object"
++            },
++            "maxItems": 50,
++            "minItems": 1,
++            "type": "array"
++        },
++        "merge_patch": {
++            "additionalProperties": {},
++            "description": "RFC 7396 merge patch on `query`, e.g. {\"source\":{\"dateRange\":{\"date_from\":\"-30d\"}}}. null removes a key. Arrays are replaced whole, so use json_patch for one element.",
++            "propertyNames": {
++                "type": "string"
++            },
++            "type": "object"
++        },
++        "name": {
++            "anyOf": [
++                {
++                    "maxLength": 400,
++                    "type": "string"
++                },
++                {
++                    "type": "null"
++                }
++            ],
++            "description": "New name, written in the same version-checked update."
++        }
++    },
++    "required": ["id"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update-question.json b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update-question.json
+new file mode 100644
+index 00000000000..494433245e3
+--- /dev/null
++++ b/services/mcp/tests/unit/__snapshots__/tool-schemas/survey-update-question.json
+@@ -0,0 +1,45 @@
++{
++    "$schema": "https://json-schema.org/draft/2020-12/schema",
++    "properties": {
++        "base_version": {
++            "anyOf": [
++                {
++                    "type": "string"
++                },
++                {
++                    "type": "number"
++                }
++            ],
++            "description": "The version from your last read (an insight's updated_at, a flag's version, or the version a previous call returned). If the object has changed since, nothing is written and you get a conflict."
++        },
++        "dry_run": {
++            "description": "Apply and validate the change and show the diff, without writing.",
++            "type": "boolean"
++        },
++        "id": {
++            "description": "Survey id.",
++            "minLength": 1,
++            "type": "string"
++        },
++        "patch": {
++            "additionalProperties": {},
++            "description": "Merge patch (RFC 7396) on that one question, e.g. {\"question\":\"New text\"} or {\"choices\":[\"A\",\"B\"]}. null removes a key. The question id cannot change.",
++            "propertyNames": {
++                "type": "string"
++            },
++            "type": "object"
++        },
++        "question_id": {
++            "description": "The question's id from a survey read. Preferred over question_index.",
++            "type": "string"
++        },
++        "question_index": {
++            "description": "Position in questions, from 0.",
++            "maximum": 9007199254740991,
++            "minimum": 0,
++            "type": "integer"
++        }
++    },
++    "required": ["id", "patch"],
++    "type": "object"
++}
+diff --git a/services/mcp/tests/unit/atomic-json-patch.test.ts b/services/mcp/tests/unit/atomic-json-patch.test.ts
+new file mode 100644
+index 00000000000..0afc57d1097
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-json-patch.test.ts
+@@ -0,0 +1,99 @@
++import { describe, expect, it } from 'vitest'
++
++import { applyJsonPatch, applyMergePatch, diffJson, JsonPatchError } from '@/tools/atomic/jsonPatch'
++
++const funnel = {
++    kind: 'InsightVizNode',
++    source: {
++        kind: 'FunnelsQuery',
++        series: [
++            { kind: 'EventsNode', event: 'pageview' },
++            { kind: 'EventsNode', event: 'signup_started' },
++        ],
++        dateRange: { date_from: '-7d' },
++    },
++}
++
++describe('applyJsonPatch', () => {
++    it('replaces, appends and removes array elements without touching the input', () => {
++        const next = applyJsonPatch(funnel, [
++            { op: 'replace', path: '/source/series/1/event', value: 'signup' },
++            { op: 'add', path: '/source/series/-', value: { kind: 'EventsNode', event: 'signup_completed' } },
++            { op: 'remove', path: '/source/dateRange' },
++        ]) as typeof funnel
++
++        expect(next.source.series.map((s) => s.event)).toEqual(['pageview', 'signup', 'signup_completed'])
++        expect(next.source).not.toHaveProperty('dateRange')
++        expect(funnel.source.series[1]!.event).toBe('signup_started')
++    })
++
++    it('inserts at an index, moves and copies', () => {
++        const next = applyJsonPatch({ a: [1, 2, 3], b: {} }, [
++            { op: 'add', path: '/a/1', value: 9 },
++            { op: 'move', from: '/a/0', path: '/b/first' },
++            { op: 'copy', from: '/b/first', path: '/c' },
++        ])
++        expect(next).toEqual({ a: [9, 2, 3], b: { first: 1 }, c: 1 })
++    })
++
++    it('is all-or-nothing: a failed test op rejects the whole patch and names it', () => {
++        expect(() =>
++            applyJsonPatch(funnel, [
++                { op: 'replace', path: '/source/series/0/event', value: 'x' },
++                { op: 'test', path: '/source/series/1/event', value: 'not-it' },
++            ])
++        ).toThrow(JsonPatchError)
++        try {
++            applyJsonPatch(funnel, [{ op: 'test', path: '/source/series/1/event', value: 'nope' }])
++        } catch (error) {
++            expect((error as JsonPatchError).operationIndex).toBe(0)
++            expect((error as Error).message).toContain('test failed')
++        }
++    })
++
++    it('refuses missing paths, out-of-range indexes and prototype segments', () => {
++        expect(() => applyJsonPatch(funnel, [{ op: 'replace', path: '/source/nope', value: 1 }])).toThrow(
++            /does not exist/
++        )
++        expect(() => applyJsonPatch(funnel, [{ op: 'remove', path: '/source/series/5' }])).toThrow(/out of range/)
++        expect(() => applyJsonPatch({}, [{ op: 'add', path: '/__proto__/polluted', value: 1 }])).toThrow(/not allowed/)
++        expect(({} as Record<string, unknown>).polluted).toBeUndefined()
++    })
++
++    it('decodes ~0 and ~1 in pointers', () => {
++        expect(
++            applyJsonPatch({ 'a/b': 1, 'c~d': 2 }, [
++                { op: 'replace', path: '/a~1b', value: 3 },
++                { op: 'remove', path: '/c~0d' },
++            ])
++        ).toEqual({
++            'a/b': 3,
++        })
++    })
++})
++
++describe('applyMergePatch', () => {
++    it('merges objects, deletes on null and replaces arrays whole (RFC 7396)', () => {
++        const next = applyMergePatch(funnel, {
++            source: { dateRange: { date_from: '-30d' }, series: [{ kind: 'EventsNode', event: 'only' }] },
++            name: null,
++        }) as typeof funnel
++        expect(next.source.dateRange.date_from).toBe('-30d')
++        expect(next.source.series).toHaveLength(1)
++        expect(next.kind).toBe('InsightVizNode')
++    })
++
++    it('refuses prototype keys', () => {
++        expect(() => applyMergePatch({}, JSON.parse('{"__proto__": {"x": 1}}'))).toThrow(/not allowed/)
++    })
++})
++
++describe('diffJson', () => {
++    it('lists leaf changes by pointer and truncates', () => {
++        const { changes } = diffJson(funnel, applyMergePatch(funnel, { source: { dateRange: { date_from: '-30d' } } }))
++        expect(changes).toEqual({ '/source/dateRange/date_from': ['-7d', '-30d'] })
++        const many = diffJson({ a: [1, 2, 3, 4] }, { a: [5, 6, 7, 8] }, 2)
++        expect(Object.keys(many.changes)).toHaveLength(2)
++        expect(many.truncated).toBe(true)
++    })
++})
+diff --git a/services/mcp/tests/unit/atomic-partial-updates.test.ts b/services/mcp/tests/unit/atomic-partial-updates.test.ts
+new file mode 100644
+index 00000000000..9820fa26265
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-partial-updates.test.ts
+@@ -0,0 +1,337 @@
++import { describe, expect, it } from 'vitest'
++
++import { ToolInputValidationError } from '@/lib/errors'
++import { WriteConflictError } from '@/tools/atomic/errors'
++import {
++    featureFlagUpdateConditions,
++    FeatureFlagUpdateConditionsSchema,
++    insightUpdateQueryPartial,
++    InsightUpdateQueryPartialSchema,
++    planFlagFilters,
++    surveyUpdateQuestion,
++    SurveyUpdateQuestionSchema,
++} from '@/tools/atomic/partialUpdates'
++import { surveyQuestionsVersion } from '@/tools/atomic/resources'
++import { conditionId } from '@/tools/featureFlags/conditionIds'
++
++import { FakePostHog } from '../fixtures/fake-posthog-backend'
++
++type Funnel = {
++    kind: string
++    source: { kind: string; series: { kind: string; event: string }[]; dateRange: { date_from: string } }
++}
++type Condition = { properties: Record<string, unknown>[]; rollout_percentage: number }
++
++const funnel = (): Funnel => ({
++    kind: 'InsightVizNode',
++    source: {
++        kind: 'FunnelsQuery',
++        series: [
++            { kind: 'EventsNode', event: 'pageview' },
++            { kind: 'EventsNode', event: 'signup_completed' },
++        ],
++        dateRange: { date_from: '-7d' },
++    },
++})
++
++const conditions = (): Condition[] => [
++    {
++        properties: [{ key: 'email', value: '@acme.com', operator: 'icontains', type: 'person' }],
++        rollout_percentage: 100,
++    },
++    { properties: [], rollout_percentage: 20 },
++]
++
++function fake(): FakePostHog {
++    const backend = new FakePostHog()
++    backend.seed('insights', { id: 81, short_id: 'legacy01', name: 'Signup funnel', query: funnel() })
++    backend.seed('feature_flags', { id: 488, key: 'new-checkout', filters: { groups: conditions() }, version: 3 })
++    backend.seed('surveys', {
++        id: 'sv1',
++        name: 'Signup survey',
++        questions: [
++            { id: 'q1', type: 'rating', question: 'How easy was it?', display: 'number', scale: 5 },
++            { id: 'q2', type: 'single_choice', question: 'Which device?', choices: ['Desktop', 'Phone', 'Tablet'] },
++            { id: 'q3', type: 'open', question: 'What almost stopped you?', optional: true },
++        ],
++    })
++    return backend
++}
++
++describe('insight-update-query-partial', () => {
++    it('job 2: adds a funnel step and widens the date range with one JSON Patch, returning only the diff', async () => {
++        const backend = fake()
++        const receipt = await insightUpdateQueryPartial(
++            backend.context(),
++            InsightUpdateQueryPartialSchema.parse({
++                id: 'legacy01',
++                json_patch: [
++                    { op: 'test', path: '/source/series/1/event', value: 'signup_completed' },
++                    { op: 'add', path: '/source/series/1', value: { kind: 'EventsNode', event: 'signup_started' } },
++                    { op: 'replace', path: '/source/dateRange/date_from', value: '-30d' },
++                ],
++            })
++        )
++        const stored = backend.get('insights', 81)!.query as ReturnType<typeof funnel>
++        expect(stored.source.series.map((s) => s.event)).toEqual(['pageview', 'signup_started', 'signup_completed'])
++        expect(stored.source.dateRange.date_from).toBe('-30d')
++        expect(receipt).toMatchObject({
++            status: 'ok',
++            id: 81,
++            changed: {
++                '/query/source/dateRange/date_from': ['-7d', '-30d'],
++                '/query/source/series/1/event': ['signup_completed', 'signup_started'],
++                '/query/source/series/2': [null, { kind: 'EventsNode', event: 'signup_completed' }],
++            },
++        })
++        expect(receipt.version).toBe(backend.get('insights', 81)!.updated_at)
++        const patch = backend.log.find((entry) => entry.method === 'PATCH')
++        expect(Object.keys(patch!.body!)).toEqual(['query'])
++    })
++
++    it('merge_patch edits a nested object', async () => {
++        const backend = fake()
++        await insightUpdateQueryPartial(backend.context(), {
++            id: 81,
++            merge_patch: { source: { filterTestAccounts: true } },
++        })
++        expect((backend.get('insights', 81)!.query as { source: Record<string, unknown> }).source).toMatchObject({
++            filterTestAccounts: true,
++            dateRange: { date_from: '-7d' },
++        })
++    })
++
++    it('rejects a patch that does not apply, or yields an invalid query, without writing', async () => {
++        const backend = fake()
++        await expect(
++            insightUpdateQueryPartial(backend.context(), {
++                id: 81,
++                json_patch: [{ op: 'replace', path: '/source/series/7/event', value: 'x' }],
++            })
++        ).rejects.toThrow(/does not apply .*out of range/)
++        await expect(
++            insightUpdateQueryPartial(backend.context(), {
++                id: 81,
++                json_patch: [{ op: 'replace', path: '/kind', value: 'Bogus' }],
++            })
++        ).rejects.toThrow(/patched query is not valid/)
++        expect(backend.writes()).toHaveLength(0)
++    })
++
++    it('refuses a stale base_version and supports dry_run', async () => {
++        const backend = fake()
++        await expect(
++            insightUpdateQueryPartial(backend.context(), {
++                id: 81,
++                merge_patch: { source: { interval: 'week' } },
++                base_version: '2020-01-01T00:00:00Z',
++            })
++        ).rejects.toBeInstanceOf(WriteConflictError)
++        const dry = await insightUpdateQueryPartial(backend.context(), {
++            id: 81,
++            merge_patch: { source: { interval: 'week' } },
++            dry_run: true,
++        })
++        expect(dry).toMatchObject({ status: 'dry_run', changed: { '/query/source/interval': [null, 'week'] } })
++        expect(backend.writes()).toHaveLength(0)
++    })
++
++    it('writes name and description in the same guarded update', async () => {
++        const backend = fake()
++        const receipt = await insightUpdateQueryPartial(backend.context(), {
++            id: 81,
++            name: 'Signup funnel (3 steps)',
++            merge_patch: { source: { dateRange: { date_from: '-30d' } } },
++        })
++        expect(receipt.changed).toEqual({
++            '/query/source/dateRange/date_from': ['-7d', '-30d'],
++            '/name': ['Signup funnel', 'Signup funnel (3 steps)'],
++        })
++        expect(Object.keys(backend.log.find((entry) => entry.method === 'PATCH')!.body!).sort()).toEqual([
++            'name',
++            'query',
++        ])
++    })
++
++    it('needs a change, and not both patch kinds', () => {
++        expect(InsightUpdateQueryPartialSchema.safeParse({ id: 1 }).success).toBe(false)
++        expect(InsightUpdateQueryPartialSchema.safeParse({ id: 1, name: 'x' }).success).toBe(true)
++        expect(
++            InsightUpdateQueryPartialSchema.safeParse({
++                id: 1,
++                merge_patch: {},
++                json_patch: [{ op: 'remove', path: '/a' }],
++            }).success
++        ).toBe(false)
++    })
++})
++
++describe('feature-flag-update-conditions', () => {
++    it('job 4: sets a rollout by condition_id and adds variants without resending the conditions', async () => {
++        const backend = fake()
++        const id0 = conditionId(conditions()[0]!, undefined)
++        const receipt = await featureFlagUpdateConditions(
++            backend.context(),
++            FeatureFlagUpdateConditionsSchema.parse({
++                id: 488,
++                base_version: 3,
++                conditions: [{ op: 'update', condition_id: id0, set: { rollout_percentage: 75 } }],
++                variants: [
++                    { op: 'add', key: 'control', rollout_percentage: 50 },
++                    { op: 'add', key: 'test', rollout_percentage: 50 },
++                ],
++            })
++        )
++        const stored = backend.get('feature_flags', 488)!
++        expect(stored.version).toBe(4)
++        expect((stored.filters as { groups: { rollout_percentage: number; properties: unknown[] }[] }).groups).toEqual([
++            { properties: conditions()[0]!.properties, rollout_percentage: 75 },
++            { properties: [], rollout_percentage: 20 },
++        ])
++        expect(receipt).toMatchObject({
++            status: 'ok',
++            version: 4,
++            key: 'new-checkout',
++            variants: [
++                { key: 'control', rollout_percentage: 50 },
++                { key: 'test', rollout_percentage: 50 },
++            ],
++        })
++        expect(receipt.conditions).toEqual([
++            { condition_id: id0, rollout_percentage: 75, properties: 1 },
++            { condition_id: expect.any(String), rollout_percentage: 20, properties: 0 },
++        ])
++        // The write carries the version precondition and no condition_id (the API does not store it).
++        const patch = backend.log.find((entry) => entry.method === 'PATCH')!
++        expect(patch.body).toMatchObject({ version: 3 })
++        expect(JSON.stringify(patch.body)).not.toContain('condition_id')
++    })
++
++    it('adds and removes conditions', () => {
++        const flag = { filters: { groups: conditions() } }
++        const next = planFlagFilters(flag, {
++            conditions: [
++                { op: 'remove', index: 1 },
++                { op: 'add', set: { properties: [], rollout_percentage: 5 }, position: 0 },
++            ],
++        })
++        expect((next.groups as { rollout_percentage: number }[]).map((g) => g.rollout_percentage)).toEqual([5, 100])
++    })
++
++    it('validates variant totals, unknown keys and conditions that force a removed variant', () => {
++        const flag = {
++            filters: {
++                groups: [{ properties: [], rollout_percentage: 100, variant: 'test' }],
++                multivariate: {
++                    variants: [
++                        { key: 'control', rollout_percentage: 50 },
++                        { key: 'test', rollout_percentage: 50 },
++                    ],
++                },
++            },
++        }
++        expect(() =>
++            planFlagFilters(flag, { variants: [{ op: 'update', key: 'test', rollout_percentage: 60 }] })
++        ).toThrow(/add up to 110, not 100/)
++        // Updating only the name keeps the stored rollout.
++        const renamed = planFlagFilters(flag, { variants: [{ op: 'update', key: 'test', name: 'Treatment' }] })
++        expect((renamed.multivariate as { variants: unknown[] }).variants[1]).toEqual({
++            key: 'test',
++            rollout_percentage: 50,
++            name: 'Treatment',
++        })
++        expect(() => planFlagFilters(flag, { variants: [{ op: 'remove', key: 'nope' }] })).toThrow(
++            /No variant with key nope/
++        )
++        expect(() =>
++            planFlagFilters(flag, {
++                variants: [
++                    { op: 'remove', key: 'test' },
++                    { op: 'update', key: 'control', rollout_percentage: 100 },
++                ],
++            })
++        ).toThrow(ToolInputValidationError)
++        expect(() =>
++            planFlagFilters(flag, { conditions: [{ op: 'update', condition_id: 'deadbeefdeadbeef', set: {} }] })
++        ).toThrow(/flag may have changed/)
++    })
++
++    it('refuses a stale base_version without writing', async () => {
++        const backend = fake()
++        await expect(
++            featureFlagUpdateConditions(backend.context(), {
++                id: 488,
++                base_version: 2,
++                conditions: [{ op: 'update', index: 0, set: { rollout_percentage: 1 } }],
++            })
++        ).rejects.toBeInstanceOf(WriteConflictError)
++        expect(backend.writes()).toHaveLength(0)
++    })
++})
++
++describe('survey-update-question', () => {
++    it('job 7: changes one question by id, leaving the others as stored', async () => {
++        const backend = fake()
++        const before = backend.get('surveys', 'sv1')!
++        const receipt = await surveyUpdateQuestion(
++            backend.context(),
++            SurveyUpdateQuestionSchema.parse({
++                id: 'sv1',
++                question_id: 'q3',
++                patch: { question: 'What nearly stopped you from signing up?' },
++            })
++        )
++        const questions = backend.get('surveys', 'sv1')!.questions as { question: string; optional?: boolean }[]
++        expect(questions[2]).toMatchObject({
++            id: 'q3',
++            question: 'What nearly stopped you from signing up?',
++            optional: true,
++        })
++        expect(questions[1]).toEqual((before.questions as unknown[])[1])
++        expect(receipt).toMatchObject({
++            status: 'ok',
++            changed: {
++                '/questions/2/question': ['What almost stopped you?', 'What nearly stopped you from signing up?'],
++            },
++            version: surveyQuestionsVersion(backend.get('surveys', 'sv1')!),
++        })
++    })
++
++    it('chains with the returned version and refuses a stale one', async () => {
++        const backend = fake()
++        const first = await surveyUpdateQuestion(backend.context(), {
++            id: 'sv1',
++            question_index: 0,
++            patch: { scale: 10 },
++        })
++        await expect(
++            surveyUpdateQuestion(backend.context(), {
++                id: 'sv1',
++                question_index: 1,
++                patch: { question: 'x' },
++                base_version: 'q-00000000',
++            })
++        ).rejects.toBeInstanceOf(WriteConflictError)
++        const second = await surveyUpdateQuestion(backend.context(), {
++            id: 'sv1',
++            question_index: 1,
++            patch: { question: 'Which device did you use?' },
++            base_version: first.version as string,
++        })
++        expect(second.status).toBe('ok')
++    })
++
++    it('rejects an unknown question, an id change and an invalid result', async () => {
++        const backend = fake()
++        await expect(
++            surveyUpdateQuestion(backend.context(), { id: 'sv1', question_id: 'zz', patch: { question: 'x' } })
++        ).rejects.toThrow(/no question with id zz/)
++        expect(
++            SurveyUpdateQuestionSchema.safeParse({ id: 'sv1', question_id: 'q1', patch: { id: 'q9' } }).success
++        ).toBe(false)
++        await expect(
++            surveyUpdateQuestion(backend.context(), { id: 'sv1', question_id: 'q1', patch: { type: 'bogus' } })
++        ).rejects.toThrow(/patched question is not valid/)
++        expect(backend.writes()).toHaveLength(0)
++    })
++})
+diff --git a/services/mcp/tests/unit/atomic-version-guard.test.ts b/services/mcp/tests/unit/atomic-version-guard.test.ts
+new file mode 100644
+index 00000000000..4d5537d38cf
+--- /dev/null
++++ b/services/mcp/tests/unit/atomic-version-guard.test.ts
+@@ -0,0 +1,323 @@
++/**
++ * The version-checked read-merge-write, and the concurrency guarantee of the partial-update tools:
++ * two simultaneous partial updates to different elements of one object never silently lose one.
++ * Either both land, or one is refused with a conflict (or, for a flag, reports that another write
++ * landed in its window).
++ */
++import { describe, expect, it } from 'vitest'
++
++import { KeyedMutex } from '@/tools/atomic/concurrency'
++import { WriteConflictError } from '@/tools/atomic/errors'
++import {
++    featureFlagUpdateConditions,
++    insightUpdateQueryPartial,
++    surveyUpdateQuestion,
++} from '@/tools/atomic/partialUpdates'
++import { featureFlagResource, insightResource } from '@/tools/atomic/resources'
++import { versionCheckedUpdate } from '@/tools/atomic/versionGuard'
++
++import { FakePostHog, jitter } from '../fixtures/fake-posthog-backend'
++
++type Funnel = { kind: string; source: { kind: string; series: { kind: string; event: string }[] } }
++type FlagFilters = {
++    groups: { properties: Record<string, unknown>[]; rollout_percentage: number }[]
++    multivariate: { variants: { key: string; rollout_percentage: number }[] }
++}
++
++const funnelQuery = (): Funnel => ({
++    kind: 'InsightVizNode',
++    source: {
++        kind: 'FunnelsQuery',
++        series: [
++            { kind: 'EventsNode', event: 'pageview' },
++            { kind: 'EventsNode', event: 'signup_started' },
++            { kind: 'EventsNode', event: 'signup_completed' },
++        ],
++    },
++})
++
++const flagFilters = (): FlagFilters => ({
++    groups: [
++        {
++            properties: [{ key: 'email', value: '@acme.com', operator: 'icontains', type: 'person' }],
++            rollout_percentage: 100,
++        },
++        { properties: [], rollout_percentage: 20 },
++    ],
++    multivariate: {
++        variants: [
++            { key: 'control', rollout_percentage: 50 },
++            { key: 'test', rollout_percentage: 50 },
++        ],
++    },
++})
++
++const surveyQuestions = (): Record<string, unknown>[] => [
++    { id: 'q1', type: 'rating', question: 'How easy was it?', display: 'number', scale: 5 },
++    { id: 'q2', type: 'single_choice', question: 'Which device?', choices: ['Desktop', 'Phone'] },
++    { id: 'q3', type: 'open', question: 'What almost stopped you?' },
++]
++
++function seeded(options: ConstructorParameters<typeof FakePostHog>[0] = {}): FakePostHog {
++    const fake = new FakePostHog(options)
++    fake.seed('insights', { id: 94, short_id: 'abc12345', name: 'Signup funnel', query: funnelQuery(), tags: [] })
++    fake.seed('feature_flags', { id: 488, key: 'new-checkout', filters: flagFilters(), version: 3 })
++    fake.seed('surveys', { id: 'sv1', name: 'Signup survey', questions: surveyQuestions() })
++    return fake
++}
++
++describe('versionCheckedUpdate', () => {
++    it('writes nothing and raises a conflict when the object changed between the read and the final check', async () => {
++        const fake = seeded()
++        const resource = insightResource(fake.context(), '42', 94)
++        await expect(
++            versionCheckedUpdate(resource, () => {
++                // Another writer lands while this update is being prepared.
++                fake.externalPatch('insights', 94, {
++                    query: { ...funnelQuery(), source: { kind: 'TrendsQuery', series: [] } },
++                })
++                return { body: { query: funnelQuery() } }
++            })
++        ).rejects.toBeInstanceOf(WriteConflictError)
++        expect(fake.writes()).toHaveLength(0)
++    })
++
++    it('refuses a stale base_version before reading further', async () => {
++        const fake = seeded()
++        const resource = featureFlagResource(fake.context(), '42', 488)
++        await expect(
++            versionCheckedUpdate(resource, () => ({ body: { active: false } }), { baseVersion: 2 })
++        ).rejects.toThrow(/changed since the version you read .*base_version 2, it is now 3/)
++        expect(fake.writes()).toHaveLength(0)
++    })
++
++    it('sends the flag version as the precondition and maps the API 409 to a conflict', async () => {
++        const fake = seeded({ flagVersionCheck: true })
++        fake.beforeWrite = () => {
++            fake.beforeWrite = undefined
++            fake.externalPatch('feature_flags', 488, { name: 'renamed in the UI' })
++        }
++        const resource = featureFlagResource(fake.context(), '42', 488)
++        const attempt = versionCheckedUpdate(resource, (flag) => ({ body: { filters: flag.filters } }))
++        await expect(attempt).rejects.toBeInstanceOf(WriteConflictError)
++        expect(fake.log.find((entry) => entry.method === 'PATCH')?.body).toMatchObject({ version: 3 })
++    })
++
++    it('reports a write that landed in the race window when the flag version moved by more than one', async () => {
++        const fake = seeded({ flagVersionCheck: false })
++        fake.beforeWrite = () => {
++            fake.beforeWrite = undefined
++            fake.externalPatch('feature_flags', 488, { name: 'renamed in the UI' })
++        }
++        const result = await versionCheckedUpdate(featureFlagResource(fake.context(), '42', 488), (flag) => ({
++            body: { filters: flag.filters },
++        }))
++        expect(result.status).toBe('ok')
++        expect(result.concurrentWriteDetected).toBe(true)
++        expect(result.warning).toMatch(/may have replaced that other change/)
++    })
++
++    it('dry_run plans and validates but makes no write', async () => {
++        const fake = seeded()
++        const result = await versionCheckedUpdate(
++            insightResource(fake.context(), '42', 94),
++            () => ({ body: { name: 'x' } }),
++            {
++                dryRun: true,
++            }
++        )
++        expect(result.status).toBe('dry_run')
++        expect(fake.writes()).toHaveLength(0)
++    })
++
++    it('documents the remaining race window: an endpoint without a precondition can still lose an outside write that lands between the final check and the write', async () => {
++        // This is the risk the tool descriptions and the README state. It needs a writer outside this
++        // process (separate lock) whose write lands in the one round trip after the final re-read.
++        const fake = seeded()
++        fake.beforeWrite = (request) => {
++            if (request.method === 'PATCH') {
++                fake.beforeWrite = undefined
++                fake.externalPatch('insights', 94, {
++                    query: {
++                        ...funnelQuery(),
++                        source: { ...funnelQuery().source, breakdownFilter: { breakdown: '$browser' } },
++                    },
++                })
++            }
++        }
++        const result = await versionCheckedUpdate(
++            insightResource(fake.context(), '42', 94),
++            (insight) => ({ body: { query: { ...(insight.query as object), filterTestAccounts: true } } }),
++            { locks: new KeyedMutex() }
++        )
++        expect(result.status).toBe('ok')
++        expect(result.concurrentWriteDetected).toBeUndefined()
++        expect(
++            (fake.get('insights', 94)!.query as { source: Record<string, unknown> }).source.breakdownFilter
++        ).toBeUndefined()
++    })
++})
++
++type Outcome = 'both_landed' | 'one_conflict' | 'race_reported' | 'silent_loss'
++
++async function race(
++    first: () => Promise<{ concurrent_write_detected?: boolean } | unknown>,
++    second: () => Promise<{ concurrent_write_detected?: boolean } | unknown>,
++    landed: () => [boolean, boolean]
++): Promise<Outcome> {
++    const settled = await Promise.allSettled([first(), second()])
++    const [a, b] = landed()
++    const conflicts = settled.filter((s) => s.status === 'rejected' && s.reason instanceof WriteConflictError).length
++    const other = settled.find((s) => s.status === 'rejected' && !(s.reason instanceof WriteConflictError))
++    if (other) {
++        throw (other as PromiseRejectedResult).reason
++    }
++    const reported = settled.some(
++        (s) =>
++            s.status === 'fulfilled' && (s.value as { concurrent_write_detected?: boolean })?.concurrent_write_detected
++    )
++    if (a && b) {
++        return 'both_landed'
++    }
++    if (conflicts === 1 && (a || b)) {
++        return 'one_conflict'
++    }
++    if (reported) {
++        return 'race_reported'
++    }
++    return 'silent_loss'
++}
++
++const ROUNDS = 40
++
++describe('concurrent partial updates through the tools never silently lose one', () => {
++    it('insight-update-query-partial: two series edited at the same time', async () => {
++        const outcomes: Outcome[] = []
++        for (let round = 0; round < ROUNDS; round++) {
++            const fake = seeded({ latency: jitter(0, 3) })
++            const context = fake.context()
++            outcomes.push(
++                await race(
++                    () =>
++                        insightUpdateQueryPartial(context, {
++                            id: 94,
++                            json_patch: [{ op: 'replace', path: '/source/series/0/event', value: `a${round}` }],
++                        }),
++                    () =>
++                        insightUpdateQueryPartial(context, {
++                            id: 'abc12345',
++                            json_patch: [{ op: 'replace', path: '/source/series/2/event', value: `b${round}` }],
++                        }),
++                    () => {
++                        const series = (fake.get('insights', 94)!.query as ReturnType<typeof funnelQuery>).source.series
++                        return [series[0]!.event === `a${round}`, series[2]!.event === `b${round}`]
++                    }
++                )
++            )
++        }
++        expect(outcomes).not.toContain('silent_loss')
++        // Inside one server process the object lock serializes the two, so both always land.
++        expect(new Set(outcomes)).toEqual(new Set(['both_landed']))
++    })
++
++    it('feature-flag-update-conditions: two conditions edited at the same time', async () => {
++        const outcomes: Outcome[] = []
++        for (let round = 0; round < ROUNDS; round++) {
++            const fake = seeded({ latency: jitter(0, 3) })
++            const context = fake.context()
++            outcomes.push(
++                await race(
++                    () =>
++                        featureFlagUpdateConditions(context, {
++                            id: 488,
++                            conditions: [{ op: 'update', index: 0, set: { rollout_percentage: 75 } }],
++                        }),
++                    () =>
++                        featureFlagUpdateConditions(context, {
++                            id: 488,
++                            conditions: [{ op: 'update', index: 1, set: { rollout_percentage: 40 } }],
++                        }),
++                    () => {
++                        const groups = (fake.get('feature_flags', 488)!.filters as ReturnType<typeof flagFilters>)
++                            .groups
++                        return [groups[0]!.rollout_percentage === 75, groups[1]!.rollout_percentage === 40]
++                    }
++                )
++            )
++        }
++        expect(new Set(outcomes)).toEqual(new Set(['both_landed']))
++    })
++
++    it('survey-update-question: two questions edited at the same time', async () => {
++        const outcomes: Outcome[] = []
++        for (let round = 0; round < ROUNDS; round++) {
++            const fake = seeded({ latency: jitter(0, 3) })
++            const context = fake.context()
++            outcomes.push(
++                await race(
++                    () =>
++                        surveyUpdateQuestion(context, {
++                            id: 'sv1',
++                            question_id: 'q1',
++                            patch: { question: `first ${round}` },
++                        }),
++                    () =>
++                        surveyUpdateQuestion(context, {
++                            id: 'sv1',
++                            question_index: 2,
++                            patch: { question: `third ${round}` },
++                        }),
++                    () => {
++                        const questions = fake.get('surveys', 'sv1')!.questions as { question: string }[]
++                        return [
++                            questions[0]!.question === `first ${round}`,
++                            questions[2]!.question === `third ${round}`,
++                        ]
++                    }
++                )
++            )
++        }
++        expect(new Set(outcomes)).toEqual(new Set(['both_landed']))
++    })
++})
++
++describe('concurrent partial updates from two server processes (separate locks)', () => {
++    async function crossProcessFlagRounds(flagVersionCheck: boolean): Promise<Record<Outcome, number>> {
++        const counts: Record<Outcome, number> = { both_landed: 0, one_conflict: 0, race_reported: 0, silent_loss: 0 }
++        for (let round = 0; round < ROUNDS; round++) {
++            const fake = seeded({ latency: jitter(0, 3), flagVersionCheck })
++            const resource = featureFlagResource(fake.context(), '42', 488)
++            const edit = (index: number, rollout: number, locks: KeyedMutex) => async () => {
++                const result = await versionCheckedUpdate(
++                    resource,
++                    (flag) => {
++                        const filters = JSON.parse(JSON.stringify(flag.filters)) as ReturnType<typeof flagFilters>
++                        filters.groups[index]!.rollout_percentage = rollout
++                        return { body: { filters } }
++                    },
++                    { locks }
++                )
++                return { concurrent_write_detected: result.concurrentWriteDetected }
++            }
++            const outcome = await race(edit(0, 75, new KeyedMutex()), edit(1, 40, new KeyedMutex()), () => {
++                const groups = (fake.get('feature_flags', 488)!.filters as ReturnType<typeof flagFilters>).groups
++                return [groups[0]!.rollout_percentage === 75, groups[1]!.rollout_percentage === 40]
++            })
++            counts[outcome]++
++        }
++        return counts
++    }
++
++    it('flags that check version: every race ends with both landed or one conflict', async () => {
++        const counts = await crossProcessFlagRounds(true)
++        expect(counts.silent_loss).toBe(0)
++        expect(counts.race_reported).toBe(0)
++        expect(counts.both_landed + counts.one_conflict).toBe(ROUNDS)
++    })
++
++    it('flags that do not check version: a lost race is always reported by the version counter', async () => {
++        const counts = await crossProcessFlagRounds(false)
++        expect(counts.silent_loss).toBe(0)
++        expect(counts.both_landed + counts.one_conflict + counts.race_reported).toBe(ROUNDS)
++    })
++})
+-- 
+2.50.1 (Apple Git-155)
+

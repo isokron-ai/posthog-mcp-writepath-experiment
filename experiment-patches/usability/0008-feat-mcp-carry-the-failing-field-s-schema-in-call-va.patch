@@ -1,0 +1,735 @@
+From 8dfb8999211259c0632a3727deb09961e28718e6 Mon Sep 17 00:00:00 2001
+From: Rafe Walker <45343084+rafe-walker@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 13:54:38 -0700
+Subject: [PATCH 08/17] feat(mcp): carry the failing field's schema in call
+ validation errors
+
+Info and schema drill-downs were 57% of response tokens in the friction
+session, mostly mandated by the "SCHEMA DRILL-DOWN RULE - HARD
+REQUIREMENT". The server's own validation errors already name the field
+(P9, #139/#140), but not its shape, so a caller still had to drill.
+
+A call that fails validation now returns, under the usual message, the
+summarized schema of each failing field (up to three, deduplicated by
+shape), using schema-utils' summarizeSchema unchanged. A missing or
+mistyped scalar is shown through its parent object, so its siblings and
+enum values are visible; a length rejection, which already names the
+bound, carries none. The text is capped at 8,000 characters and comes
+from the tool schema only, never from caller input; analytics keeps the
+short message.
+
+The drill-down rule is softened to "look up the schema if a call fails or
+the shape is unfamiliar", and the "run info for ALL tools first" line is
+gone. info and schema work as before; the JSON Schema they show now comes
+from one cached helper.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ services/mcp/schema/exec-command-reference.md |   2 +-
+ .../templates/sections/cli-examples-claude.md |   4 +-
+ .../src/templates/sections/cli-examples.md    |   5 +-
+ .../sections/cli-schema-drilldown.md          |  16 +-
+ .../sections/exec-tool-blurb-compact.md       |   2 +-
+ .../src/templates/sections/exec-tool-blurb.md |   7 +-
+ services/mcp/src/tools/exec-schema-view.ts    | 197 ++++++++++++++++++
+ services/mcp/src/tools/exec.ts                |  35 +---
+ ...c-command-reference-claude-chat-skills.txt |  20 +-
+ .../exec-command-reference-claude-chat.txt    |  20 +-
+ .../exec-command-reference-full.txt           |  21 +-
+ .../instructions/exec-tool-description.txt    |   7 +-
+ .../tests/unit/exec-validate-first.test.ts    | 125 +++++++++++
+ .../tests/unit/instructions-formatter.test.ts |   2 +-
+ 14 files changed, 374 insertions(+), 89 deletions(-)
+ create mode 100644 services/mcp/src/tools/exec-schema-view.ts
+ create mode 100644 services/mcp/tests/unit/exec-validate-first.test.ts
+
+diff --git a/services/mcp/schema/exec-command-reference.md b/services/mcp/schema/exec-command-reference.md
+index 833688dee16..8b5108da6e9 100644
+--- a/services/mcp/schema/exec-command-reference.md
++++ b/services/mcp/schema/exec-command-reference.md
+@@ -30,7 +30,7 @@ posthog:exec({ "command": "tools" })            # fallback: list all
+ # 2. Inspect once if the schema is missing
+ posthog:exec({ "command": "info <tool_name>" })
+ 
+-# 3. Drill into complex fields — REQUIRED for any field with a `hint`
++# 3. Drill into a complex field when its shape is unfamiliar
+ posthog:exec({ "command": "schema <tool_name> <field_path>" })
+ 
+ # 4. Call; reuse the schema
+diff --git a/services/mcp/src/templates/sections/cli-examples-claude.md b/services/mcp/src/templates/sections/cli-examples-claude.md
+index 5c6a6ca0d7f..2518c5def84 100644
+--- a/services/mcp/src/templates/sections/cli-examples-claude.md
++++ b/services/mcp/src/templates/sections/cli-examples-claude.md
+@@ -46,8 +46,8 @@ WRONG: Run `info feature-flag-get-all` first.
+ 
+ <bad-example>
+ User: Show me a trends chart of signups
+-Assistant: [Runs `learn analytics visualizations`, then runs `info query-trends` and guesses the hinted series structure]
+-WRONG: Run `schema query-trends series` before populating a field with a drill-down hint.
++Assistant: [Runs `learn analytics visualizations`, then calls query-trends, gets a validation error carrying the `series` schema, and drills into `schema query-trends series` anyway]
++WRONG: The error already held the failing field's schema. Fix the call from it and retry.
+ </bad-example>
+ 
+ <bad-example>
+diff --git a/services/mcp/src/templates/sections/cli-examples.md b/services/mcp/src/templates/sections/cli-examples.md
+index 09552dba337..b3163e07b2c 100644
+--- a/services/mcp/src/templates/sections/cli-examples.md
++++ b/services/mcp/src/templates/sections/cli-examples.md
+@@ -40,9 +40,8 @@ WRONG: Run `info` once for each missing schema.
+ 
+ <bad-example>
+ User: Show me a trends chart of signups
+-Assistant: [Runs info query-trends, sees summary with hints, then immediately calls query-trends with guessed series structure]
+-WRONG — info returned a summary with hint: "DO NOT GUESS – run `schema query-trends series` before populating this field".
+-You MUST follow the hint and run `schema` before constructing the series field.
++Assistant: [Calls query-trends, gets a validation error that carries the `series` schema, then runs `info query-trends` and `schema query-trends series` before retrying]
++WRONG — the error already held the failing field's schema. Fix the call from it and retry.
+ </bad-example>
+ 
+ <bad-example>
+diff --git a/services/mcp/src/templates/sections/cli-schema-drilldown.md b/services/mcp/src/templates/sections/cli-schema-drilldown.md
+index 59ff961d1c9..37466152ad3 100644
+--- a/services/mcp/src/templates/sections/cli-schema-drilldown.md
++++ b/services/mcp/src/templates/sections/cli-schema-drilldown.md
+@@ -1,16 +1,12 @@
+-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
++**SCHEMA DRILL-DOWN RULE**
+ 
+ The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
+ 
+-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
++Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
+ 
+-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
++To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+ 
+-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
++For query tools, the fields people most often need are:
+ 
+-For query tools, you will typically need:
+-
+-- `schema <tool> series` — to see EventsNode/ActionsNode structure
+-- `schema <tool> series.properties` — to see property filter structure of series
+-
+-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
++- `schema <tool> series` — EventsNode/ActionsNode structure
++- `schema <tool> series.properties` — property filter structure of series
+diff --git a/services/mcp/src/templates/sections/exec-tool-blurb-compact.md b/services/mcp/src/templates/sections/exec-tool-blurb-compact.md
+index 2f8badf1097..31ecaf8e4b4 100644
+--- a/services/mcp/src/templates/sections/exec-tool-blurb-compact.md
++++ b/services/mcp/src/templates/sections/exec-tool-blurb-compact.md
+@@ -1,3 +1,3 @@
+ ### Using the `posthog` tool
+ 
+-Pass CLI-style commands in `command`. Find tools with `search` or `tools`. Run `info <tool_name>` once when its schema is missing, then reuse it. Run `schema <tool_name> <field_path>` for complex fields with a `hint`. Invoke tools with `call <tool_name> <json_input>`; add `--json` for raw JSON. Never guess a schema.
++Pass CLI-style commands in `command`. Find tools with `search` or `tools`. Run `info <tool_name>` once when its schema is missing, then reuse it. Run `schema <tool_name> <field_path>` for a hinted field if unfamiliar; a failed call returns its schema. Invoke tools with `call <tool_name> <json_input>`; add `--json` for raw JSON.
+diff --git a/services/mcp/src/templates/sections/exec-tool-blurb.md b/services/mcp/src/templates/sections/exec-tool-blurb.md
+index 18e9177bc19..e7435c653ba 100644
+--- a/services/mcp/src/templates/sections/exec-tool-blurb.md
++++ b/services/mcp/src/templates/sections/exec-tool-blurb.md
+@@ -7,9 +7,10 @@ Pass CLI-style commands in the `command` parameter for all PostHog interactions.
+ **Requirements**
+ 
+ 1. Find unknown tools with `search` or `tools`.
+-2. Run `info <tool_name>` once if its schema is not in context. Reuse it unless the tool changes or a schema error occurs.
++2. Run `info <tool_name>` once if its shape is unfamiliar. Reuse it unless the tool changes.
++3. If a call fails validation, fix it from the error: it carries the failing field's schema.
+ 
+-Never guess a schema or run `info` before every call.
++Do not run `info` before every call.
+ 
+ **Commands (in order):**
+ 
+@@ -21,7 +22,7 @@ posthog:exec({ "command": "tools" })            # fallback: list all
+ # 2. Inspect once if the schema is missing
+ posthog:exec({ "command": "info <tool_name>" })
+ 
+-# 3. Drill into complex fields — REQUIRED for any field with a `hint`
++# 3. Drill into a complex field when its shape is unfamiliar
+ posthog:exec({ "command": "schema <tool_name> <field_path>" })
+ 
+ # 4. Call; reuse the schema
+diff --git a/services/mcp/src/tools/exec-schema-view.ts b/services/mcp/src/tools/exec-schema-view.ts
+new file mode 100644
+index 00000000000..654a4d56364
+--- /dev/null
++++ b/services/mcp/src/tools/exec-schema-view.ts
+@@ -0,0 +1,197 @@
++import { z } from 'zod'
++
++import { resolveSchemaPath, summarizeSchema } from './schema-utils'
++import type { Tool, ZodObjectAny } from './types'
++
++type JsonSchema = Record<string, unknown>
++
++/**
++ * Exec mode owns output encoding through the `--json` call flag, so tools must
++ * not also advertise their `output_format` input — an agent passing
++ * `output_format: "json"` would make the handler skip the server-side formatter
++ * only for exec to TOON-encode the raw result anyway. `call` folds the flag back
++ * into the field for tools that have it (see the `call` verb), so hiding it here
++ * loses no capability.
++ */
++export function stripOutputFormatProperty(jsonSchema: JsonSchema): JsonSchema {
++    const properties = jsonSchema.properties as Record<string, unknown> | undefined
++    if (!properties || !('output_format' in properties)) {
++        return jsonSchema
++    }
++    const { output_format: _omitted, ...rest } = properties
++    return { ...jsonSchema, properties: rest }
++}
++
++const agentSchemaCache = new WeakMap<object, JsonSchema>()
++
++/**
++ * The input schema exec shows an agent for a tool: `info`, `schema`, and the schema a
++ * failed `call` carries. `io: 'input'` mirrors the advertised `tools/list` schema and the
++ * executor's validation, so fields with a Zod `.default()` read as optional. Converted
++ * once per tool schema.
++ */
++export function agentFacingInputSchema(tool: Pick<Tool<ZodObjectAny>, 'schema' | 'rawInputSchema'>): JsonSchema {
++    const key = (tool.rawInputSchema as object | undefined) ?? tool.schema
++    const cached = agentSchemaCache.get(key)
++    if (cached) {
++        return cached
++    }
++    const schema =
++        (tool.rawInputSchema as JsonSchema | undefined) ??
++        stripOutputFormatProperty(z.toJSONSchema(tool.schema, { io: 'input' }) as JsonSchema)
++    agentSchemaCache.set(key, schema)
++    return schema
++}
++
++/** Upper bound on the schema text one validation error carries (about 2,000 tokens).
++ *  Past it the summary drops to field names and types, so a rejection stays far
++ *  cheaper than the `info` plus `schema` round trips it replaces. */
++export const MAX_ERROR_SCHEMA_CHARS = 8_000
++
++/** How many distinct failing fields one error describes. */
++const MAX_ERROR_SCHEMA_FIELDS = 3
++
++const ISSUE_CODES_ON_A_LEAF = new Set(['invalid_type', 'invalid_value', 'invalid_format'])
++
++/** A length or range rejection already names the bound and the value's size, which is
++ *  everything needed to fix it, so it carries no schema. */
++const SELF_EXPLAINING_ISSUE_CODES = new Set(['too_big', 'too_small'])
++
++/**
++ * The schema path whose summary lets the caller fix one issue.
++ *
++ * A missing or mistyped scalar is fixed from its parent object: that summary names the
++ * field's type, enum and description next to its siblings, which is where a caller who
++ * sent the wrong shape (`breakdowns` for `breakdown`) finds the right one. Anything else
++ * (a union, an object, an unknown key) is described by the node that failed.
++ */
++function targetPathFor(issue: z.core.$ZodIssue): string[] {
++    const path = issue.path.map(String)
++    if (issue.code === 'unrecognized_keys') {
++        return path
++    }
++    if (ISSUE_CODES_ON_A_LEAF.has(issue.code) && path.length > 0) {
++        return path.slice(0, -1)
++    }
++    return path
++}
++
++/** Drops a trailing array index, so `series.0` reads as `series` the way `schema` takes it. */
++function displayPath(path: readonly string[]): string {
++    const trimmed = [...path]
++    while (trimmed.length > 0 && /^\d+$/.test(trimmed[trimmed.length - 1]!)) {
++        trimmed.pop()
++    }
++    return trimmed.join('.')
++}
++
++/** Field names and types only, for a summary too large to carry whole. */
++function namesAndTypes(summary: unknown): unknown {
++    if (typeof summary !== 'object' || summary === null) {
++        return summary
++    }
++    const node = summary as Record<string, unknown>
++    const out: Record<string, unknown> = { type: node['type'] }
++    if (Array.isArray(node['required'])) {
++        out['required'] = node['required']
++    }
++    if (typeof node['properties'] === 'object' && node['properties'] !== null) {
++        const properties: Record<string, string> = {}
++        for (const [name, prop] of Object.entries(node['properties'] as Record<string, unknown>)) {
++            const entry = prop as Record<string, unknown>
++            const enumValues = Array.isArray(entry['enum'])
++                ? ` (one of: ${(entry['enum'] as unknown[]).join(', ')})`
++                : ''
++            properties[name] = `${String(entry['type'] ?? 'unknown')}${enumValues}`
++        }
++        out['properties'] = properties
++    }
++    if (Array.isArray(node['variants'])) {
++        out['variants'] = (node['variants'] as unknown[]).map(namesAndTypes)
++    }
++    if (node['items'] !== undefined) {
++        out['items'] = namesAndTypes(node['items'])
++    }
++    return out
++}
++
++/**
++ * The summarized schema of each field a failed `call` got wrong, as `schema <tool>
++ * <field>` would print it, so the caller can correct the call from the error itself
++ * instead of spending an `info` and one `schema` call per field first.
++ *
++ * Text comes from the tool's own schema only, never from the rejected input. Two
++ * failing fields with the same shape (a retention `targetEntity` and `returningEntity`)
++ * are printed once.
++ */
++export function describeFailingFieldSchemas(
++    tool: Pick<Tool<ZodObjectAny>, 'name' | 'schema' | 'rawInputSchema'>,
++    issues: readonly z.core.$ZodIssue[]
++): string {
++    let full: JsonSchema
++    try {
++        full = agentFacingInputSchema(tool)
++    } catch {
++        return ''
++    }
++    const targets: string[][] = []
++    const seenPaths = new Set<string>()
++    for (const issue of issues) {
++        if (SELF_EXPLAINING_ISSUE_CODES.has(issue.code)) {
++            continue
++        }
++        const target = targetPathFor(issue)
++        const key = target.join('.')
++        if (seenPaths.has(key)) {
++            continue
++        }
++        seenPaths.add(key)
++        targets.push(target)
++        if (targets.length === MAX_ERROR_SCHEMA_FIELDS) {
++            break
++        }
++    }
++
++    const blocks: string[] = []
++    const printed = new Map<string, string>()
++    let budget = MAX_ERROR_SCHEMA_CHARS
++    for (const target of targets) {
++        // Walk up until the path resolves: an issue under an open record or a catchall
++        // names a key the schema never declared.
++        let path = [...target]
++        let resolved: JsonSchema | null = path.length === 0 ? full : resolveSchemaPath(full, path.join('.'))
++        while (!resolved && path.length > 0) {
++            path = path.slice(0, -1)
++            resolved = path.length === 0 ? full : resolveSchemaPath(full, path.join('.'))
++        }
++        if (!resolved) {
++            continue
++        }
++        const shown = displayPath(path)
++        const summary = summarizeSchema(resolved, tool.name, shown || undefined)
++        const fullText = JSON.stringify(summary)
++        const label = shown ? `Schema of ${shown}` : `Schema of the ${tool.name} input`
++        // Drill-down hints name the field's own path, so compare shapes with the path taken out.
++        const shapeKey = shown ? fullText.split(shown).join('\u0000') : fullText
++        const duplicateOf = printed.get(shapeKey)
++        if (duplicateOf !== undefined) {
++            blocks.push(`${label}: same as ${duplicateOf}.`)
++            continue
++        }
++        let text = fullText
++        if (text.length > budget) {
++            text = JSON.stringify(namesAndTypes(summary))
++        }
++        if (text.length > budget) {
++            blocks.push(`${label}: too large to include. Run "schema ${tool.name}${shown ? ` ${shown}` : ''}".`)
++            continue
++        }
++        budget -= text.length
++        printed.set(shapeKey, shown || 'the input')
++        blocks.push(`${label}:\n${text}`)
++    }
++    if (blocks.length === 0) {
++        return ''
++    }
++    return `\n\nFix the call from the schema below; no separate info or schema call is needed.\n${blocks.join('\n')}`
++}
+diff --git a/services/mcp/src/tools/exec.ts b/services/mcp/src/tools/exec.ts
+index 3f86c08c0c7..7617cf2c0b6 100644
+--- a/services/mcp/src/tools/exec.ts
++++ b/services/mcp/src/tools/exec.ts
+@@ -26,6 +26,7 @@ import { APP_DATA_META_KEY } from '@/ui-apps/types'
+ 
+ import { readParamAliases } from './cast-helpers'
+ import { type ExecLearnCatalog, QUALIFIED_IDENTIFIER, tokenizeLearnInput } from './exec-learn'
++import { agentFacingInputSchema, describeFailingFieldSchemas } from './exec-schema-view'
+ import {
+     TOKEN_CHAR_LIMIT,
+     compactInfoSchema,
+@@ -1703,23 +1704,6 @@ function schemaHasOutputFormat(schema: ZodObjectAny): boolean {
+     return current instanceof z.ZodObject && 'output_format' in current.shape
+ }
+ 
+-/**
+- * Exec mode owns output encoding through the `--json` call flag, so tools must
+- * not also advertise their `output_format` input — an agent passing
+- * `output_format: "json"` would make the handler skip the server-side formatter
+- * only for exec to TOON-encode the raw result anyway. `call` folds the flag back
+- * into the field for tools that have it (see the `call` verb), so hiding it here
+- * loses no capability.
+- */
+-function stripOutputFormatProperty(jsonSchema: Record<string, unknown>): Record<string, unknown> {
+-    const properties = jsonSchema.properties as Record<string, unknown> | undefined
+-    if (!properties || !('output_format' in properties)) {
+-        return jsonSchema
+-    }
+-    const { output_format: _omitted, ...rest } = properties
+-    return { ...jsonSchema, properties: rest }
+-}
+-
+ /** A lowercase hyphenated token, the shape every name in the tool catalog takes. */
+ const HINT_TOOL_NAME_PATTERN = /[a-z][a-z0-9]*(?:-[a-z0-9]+)+/g
+ 
+@@ -2096,11 +2080,7 @@ export function createExecTool(
+                     // validation: fields with a Zod `.default()` (e.g. a query `kind` discriminator)
+                     // are optional and auto-filled. The default `io: 'output'` would list them as
+                     // required, misrepresenting them as mandatory input the caller must supply.
+-                    const fullSchema =
+-                        tool.rawInputSchema ??
+-                        stripOutputFormatProperty(
+-                            z.toJSONSchema(tool.schema, { io: 'input' }) as Record<string, unknown>
+-                        )
++                    const fullSchema = agentFacingInputSchema(tool)
+                     // YAML for the top shape, but inputSchema stays as a JSON
+                     // string dumped inside the YAML — JSON Schema is conventionally
+                     // JSON and converting it to YAML obscures `$ref`, `oneOf`, etc.
+@@ -2153,11 +2133,7 @@ export function createExecTool(
+                     )
+                     // See the `info` command: `io: 'input'` keeps this in sync with the advertised
+                     // schema and validation, so `.default()` fields aren't shown as required.
+-                    const fullJsonSchema =
+-                        schemaTool.rawInputSchema ??
+-                        stripOutputFormatProperty(
+-                            z.toJSONSchema(schemaTool.schema, { io: 'input' }) as Record<string, unknown>
+-                        )
++                    const fullJsonSchema = agentFacingInputSchema(schemaTool)
+ 
+                     if (!fieldPath) {
+                         // The bare `schema <tool>` view is always a summary. Any
+@@ -2297,8 +2273,11 @@ export function createExecTool(
+                         // classifies it as `validation`, not `internal`. The value-free
+                         // descriptor rides along so the errored `$mcp_tool_call` records
+                         // which field/alias was rejected — without the payload.
++                        // The agent also gets the summarized schema of each failing field,
++                        // so it can fix the call without an `info` or `schema` round trip.
++                        // Analytics keeps the short message above.
+                         throw new ToolInputValidationError(
+-                            message,
++                            `${message}${describeFailingFieldSchemas(tool, validation.error.issues)}`,
+                             describeValidationError(validation.error, toolSchema)
+                         )
+                     }
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
+index fc24fdb2e81..e3a8a3967c9 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat-skills.txt
+@@ -38,22 +38,18 @@ Load all matching topics in one `learn` command first. Topics are cumulative.
+ 
+ **Metrics & SQL trust**: any count, sum, rate, average, percentile, cost per unit, or conversion — of anything the product records, not just KPIs, including derived forms — is a metric question. Inspect the complete governed catalog with `metric-list` before `read-data-schema`, insights, domain tools, or raw SQL. Use `metric-describe` for a candidate's definition, including HogQL or SQL, before adapting it. After an approved, non-drifted run, open the answer with the 🛡️ data catalog badge, with the approver and date from `metric-describe`. Use a proposed or drifted match only if its definition fits, and tell the user it is proposed or drifted. Run `learn analytics` before writing SQL or joins — it covers certified tables/views and verified joins. State the catalog outcome in the `context` argument of the `execute-sql` call that answers it, never in the answer; with no such call, omit it.
+ 
+-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
++**SCHEMA DRILL-DOWN RULE**
+ 
+ The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
+ 
+-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
++Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
+ 
+-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
++To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+ 
+-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
++For query tools, the fields people most often need are:
+ 
+-For query tools, you will typically need:
+-
+-- `schema <tool> series` — to see EventsNode/ActionsNode structure
+-- `schema <tool> series.properties` — to see property filter structure of series
+-
+-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
++- `schema <tool> series` — EventsNode/ActionsNode structure
++- `schema <tool> series.properties` — property filter structure of series
+ 
+ **Data discovery:** After the metric check, before any analytical `call` that touches
+ collected data (`query-*`, `execute-sql` against `events`/`persons`/`sessions`), confirm
+@@ -115,8 +111,8 @@ WRONG: Run `info feature-flag-get-all` first.
+ 
+ <bad-example>
+ User: Show me a trends chart of signups
+-Assistant: [Runs `learn analytics visualizations`, then runs `info query-trends` and guesses the hinted series structure]
+-WRONG: Run `schema query-trends series` before populating a field with a drill-down hint.
++Assistant: [Runs `learn analytics visualizations`, then calls query-trends, gets a validation error carrying the `series` schema, and drills into `schema query-trends series` anyway]
++WRONG: The error already held the failing field's schema. Fix the call from it and retry.
+ </bad-example>
+ 
+ <bad-example>
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
+index 5b2f894da86..746d08269da 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-claude-chat.txt
+@@ -25,22 +25,18 @@ Load all matching topics in one `learn` command first. Topics are cumulative.
+ 
+ **Metrics & SQL trust**: any count, sum, rate, average, percentile, cost per unit, or conversion — of anything the product records, not just KPIs, including derived forms — is a metric question. Inspect the complete governed catalog with `metric-list` before `read-data-schema`, insights, domain tools, or raw SQL. Use `metric-describe` for a candidate's definition, including HogQL or SQL, before adapting it. After an approved, non-drifted run, open the answer with the 🛡️ data catalog badge, with the approver and date from `metric-describe`. Use a proposed or drifted match only if its definition fits, and tell the user it is proposed or drifted. Run `learn analytics` before writing SQL or joins — it covers certified tables/views and verified joins. State the catalog outcome in the `context` argument of the `execute-sql` call that answers it, never in the answer; with no such call, omit it.
+ 
+-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
++**SCHEMA DRILL-DOWN RULE**
+ 
+ The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
+ 
+-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
++Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
+ 
+-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
++To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+ 
+-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
++For query tools, the fields people most often need are:
+ 
+-For query tools, you will typically need:
+-
+-- `schema <tool> series` — to see EventsNode/ActionsNode structure
+-- `schema <tool> series.properties` — to see property filter structure of series
+-
+-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
++- `schema <tool> series` — EventsNode/ActionsNode structure
++- `schema <tool> series.properties` — property filter structure of series
+ 
+ **Data discovery:** After the metric check, before any analytical `call` that touches
+ collected data (`query-*`, `execute-sql` against `events`/`persons`/`sessions`), confirm
+@@ -102,8 +98,8 @@ WRONG: Run `info feature-flag-get-all` first.
+ 
+ <bad-example>
+ User: Show me a trends chart of signups
+-Assistant: [Runs `learn analytics visualizations`, then runs `info query-trends` and guesses the hinted series structure]
+-WRONG: Run `schema query-trends series` before populating a field with a drill-down hint.
++Assistant: [Runs `learn analytics visualizations`, then calls query-trends, gets a validation error carrying the `series` schema, and drills into `schema query-trends series` anyway]
++WRONG: The error already held the failing field's schema. Fix the call from it and retry.
+ </bad-example>
+ 
+ <bad-example>
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+index 292bb0d7d5f..52e6223ce13 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-command-reference-full.txt
+@@ -27,22 +27,18 @@ The first call for that shape is `metric-list`; `read-data-schema`, `info query-
+ - After an approved, non-drifted run, open with `🛡️ **From your data catalog**: <display_name>, approved definition, reviewed by <approver> on <date like Oct 6, 2026>`, both from `metric-describe`. No 🛡️ elsewhere.
+ - Listings: omit the filter and report status. Never edit metrics.
+ 
+-**SCHEMA DRILL-DOWN RULE — HARD REQUIREMENT**
++**SCHEMA DRILL-DOWN RULE**
+ 
+ The `info` command may return the full schema (for simple tools) or a top-level summary with drill-down hints (for complex tools). Look for `hint` fields in the response.
+ 
+-If `info` returned a summary (fields have `hint` values), call `schema <tool_name> <field_name>` for each field you need to populate BEFORE constructing that field's value in a `call` command.
++Look up the schema if a call fails or the shape is unfamiliar. When a `call` fails validation, the error names the failing field and carries its summarized schema (and its siblings'), so you can usually fix the call from the error alone instead of running `info` or `schema` first.
+ 
+-If `schema` also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
++To inspect a field before building it, run `schema <tool_name> <field_name>`; if that also returns a summary (because the field is too large), drill deeper using dot-notation: `schema <tool> <field>.<subfield>`.
+ 
+-**NEVER** guess the structure of fields that have hints. **ALWAYS** drill down first.
++For query tools, the fields people most often need are:
+ 
+-For query tools, you will typically need:
+-
+-- `schema <tool> series` — to see EventsNode/ActionsNode structure
+-- `schema <tool> series.properties` — to see property filter structure of series
+-
+-**For multiple tools:** Run `info` for ALL tools first, then make your `call` commands.
++- `schema <tool> series` — EventsNode/ActionsNode structure
++- `schema <tool> series.properties` — property filter structure of series
+ 
+ **Data discovery:** After the metric check, before any analytical `call` that touches
+ collected data (`query-*`, `execute-sql` against `events`/`persons`/`sessions`), confirm
+@@ -98,9 +94,8 @@ WRONG: Run `info` once for each missing schema.
+ 
+ <bad-example>
+ User: Show me a trends chart of signups
+-Assistant: [Runs info query-trends, sees summary with hints, then immediately calls query-trends with guessed series structure]
+-WRONG — info returned a summary with hint: "DO NOT GUESS – run `schema query-trends series` before populating this field".
+-You MUST follow the hint and run `schema` before constructing the series field.
++Assistant: [Calls query-trends, gets a validation error that carries the `series` schema, then runs `info query-trends` and `schema query-trends series` before retrying]
++WRONG — the error already held the failing field's schema. Fix the call from it and retry.
+ </bad-example>
+ 
+ <bad-example>
+diff --git a/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt b/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt
+index 5949ecd4cdd..3b6572b55bd 100644
+--- a/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt
++++ b/services/mcp/tests/unit/__snapshots__/instructions/exec-tool-description.txt
+@@ -9,9 +9,10 @@ Pass CLI-style commands in the `command` parameter for all PostHog interactions.
+ **Requirements**
+ 
+ 1. Find unknown tools with `search` or `tools`.
+-2. Run `info <tool_name>` once if its schema is not in context. Reuse it unless the tool changes or a schema error occurs.
++2. Run `info <tool_name>` once if its shape is unfamiliar. Reuse it unless the tool changes.
++3. If a call fails validation, fix it from the error: it carries the failing field's schema.
+ 
+-Never guess a schema or run `info` before every call.
++Do not run `info` before every call.
+ 
+ **Commands (in order):**
+ 
+@@ -23,7 +24,7 @@ posthog:exec({ "command": "tools" })            # fallback: list all
+ # 2. Inspect once if the schema is missing
+ posthog:exec({ "command": "info <tool_name>" })
+ 
+-# 3. Drill into complex fields — REQUIRED for any field with a `hint`
++# 3. Drill into a complex field when its shape is unfamiliar
+ posthog:exec({ "command": "schema <tool_name> <field_path>" })
+ 
+ # 4. Call; reuse the schema
+diff --git a/services/mcp/tests/unit/exec-validate-first.test.ts b/services/mcp/tests/unit/exec-validate-first.test.ts
+new file mode 100644
+index 00000000000..78868480d11
+--- /dev/null
++++ b/services/mcp/tests/unit/exec-validate-first.test.ts
+@@ -0,0 +1,125 @@
++import { describe, expect, it, vi } from 'vitest'
++import { z } from 'zod'
++
++import { ToolInputValidationError } from '@/lib/errors'
++import { SessionManager } from '@/lib/SessionManager'
++import { getToolsFromContext } from '@/tools'
++import { createExecTool, type ExecInnerCallProperties } from '@/tools/exec'
++import { describeFailingFieldSchemas, MAX_ERROR_SCHEMA_CHARS } from '@/tools/exec-schema-view'
++import type { Context, Tool, ZodObjectAny } from '@/tools/types'
++
++const context = {
++    api: {} as any,
++    cache: {} as any,
++    env: {} as any,
++    stateManager: { getApiKey: async () => ({ scopes: ['*'] }), getAiConsentGiven: async () => true } as any,
++    sessionManager: new SessionManager({} as any),
++    getDistinctId: async () => 'd',
++    trackEvent: async () => {},
++} as Context
++
++function mockTool(schema: ZodObjectAny, handler = vi.fn(async () => ({ ok: true }))): Tool<ZodObjectAny> {
++    return {
++        name: 'mock-tool',
++        title: 'Mock',
++        description: 'Mock',
++        schema,
++        scopes: [],
++        annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
++        handler,
++    }
++}
++
++async function rejection(exec: Tool<any>, command: string): Promise<Error> {
++    return exec.handler(context, { command }).then(
++        () => {
++            throw new Error('expected the call to be rejected')
++        },
++        (error: Error) => error
++    )
++}
++
++describe('a failed call carries the failing field schema', () => {
++    it('shows the parent object of a missing nested field, so its siblings are visible', async () => {
++        const schema = z.object({
++            breakdownFilter: z.object({
++                breakdown: z.string().describe('The property to break down by.'),
++                breakdown_type: z.enum(['event', 'person']).optional(),
++            }),
++        })
++        const exec = createExecTool([mockTool(schema)], context, 'd', 'r', undefined)
++        const error = await rejection(exec, 'call mock-tool {"breakdownFilter": {"breakdowns": []}}')
++        expect(error).toBeInstanceOf(ToolInputValidationError)
++        expect(error.message).toMatch(
++            /^Invalid input for "mock-tool": missing required parameter: breakdownFilter\.breakdown/
++        )
++        expect(error.message).toContain('no separate info or schema call is needed')
++        const [, block] = error.message.split('Schema of breakdownFilter:\n')
++        const summary = JSON.parse(block!)
++        expect(summary.required).toEqual(['breakdown'])
++        expect(summary.properties.breakdown.description).toBe('The property to break down by.')
++        expect(summary.properties.breakdown_type.enum).toEqual(['event', 'person'])
++    })
++
++    it('keeps the analytics message short and value-free', async () => {
++        const tracked: ExecInnerCallProperties[] = []
++        const schema = z.object({ filter: z.object({ key: z.string() }) })
++        const exec = createExecTool([mockTool(schema)], context, 'd', 'r', undefined, (_name, props) => {
++            tracked.push(props)
++        })
++        await rejection(exec, 'call mock-tool {"filter": {"secret-value": "hunter2"}}')
++        expect(tracked[0]!.error_message).toBe('Invalid input for "mock-tool": missing required parameter: filter.key')
++    })
++
++    it('carries no schema for a length rejection, which already names the bound', async () => {
++        const exec = createExecTool([mockTool(z.object({ name: z.string().max(3) }))], context, 'd', 'r', undefined)
++        const error = await rejection(exec, 'call mock-tool {"name": "toolong"}')
++        expect(error.message).not.toContain('Schema of')
++    })
++
++    it('prints two failing fields of the same shape once', () => {
++        const entity = z.object({ id: z.string(), type: z.literal('events').optional() })
++        const schema = z.object({ filter: z.object({ target: entity, returning: entity }) })
++        const parsed = schema.safeParse({ filter: { target: {}, returning: {} } })
++        expect(parsed.success).toBe(false)
++        const text = describeFailingFieldSchemas(mockTool(schema), parsed.error!.issues)
++        expect(text.match(/"required":\["id"\]/g)).toHaveLength(1)
++        expect(text).toMatch(/Schema of filter\.(returning|target): same as filter\.(target|returning)\./)
++    })
++
++    it('reproduces the friction-report probes #139 and #140 with the real query tools', async () => {
++        const tools = await getToolsFromContext(context)
++        const exec = createExecTool(tools, context, 'd', 'r', undefined)
++
++        // #139: a trends-shaped breakdown sent to a funnel.
++        const funnel = await rejection(
++            exec,
++            'call query-funnel {"series": [{"kind": "EventsNode", "event": "a"}, {"kind": "EventsNode", "event": "b"}], "breakdownFilter": {"breakdowns": [{"property": "$browser", "type": "event"}]}, "dateRange": {"date_from": "-7d"}}'
++        )
++        expect(funnel.message).toContain('missing required parameter: breakdownFilter.breakdown')
++        expect(funnel.message).toContain('Schema of breakdownFilter:')
++        expect(funnel.message).toContain('"breakdown_type"')
++
++        // #140: series-shaped entities sent to retention.
++        const retention = await rejection(
++            exec,
++            'call query-retention {"retentionFilter": {"targetEntity": {"kind": "EventsNode", "event": "a"}, "returningEntity": {"kind": "EventsNode", "event": "b"}}, "dateRange": {"date_from": "-28d"}}'
++        )
++        expect(retention.message).toMatch(/Schema of retentionFilter\.(returningEntity|targetEntity):/)
++        expect(retention.message).toMatch(/same as retentionFilter\.(returningEntity|targetEntity)/)
++        expect(retention.message).toContain('"id"')
++        expect(retention.message.length).toBeLessThan(MAX_ERROR_SCHEMA_CHARS + 1_000)
++    })
++})
++
++describe('info and schema still work as before', () => {
++    it('serves the drill-down a validation error would point at', async () => {
++        const tools = await getToolsFromContext(context)
++        const exec = createExecTool(tools, context, 'd', 'r', undefined)
++        const result = JSON.parse(
++            (await exec.handler(context, { command: 'schema query-funnel breakdownFilter' })) as string
++        ) as { field: string; schema: Record<string, unknown> }
++        expect(result.field).toBe('breakdownFilter')
++        expect(JSON.stringify(result.schema)).toContain('breakdown_type')
++    })
++})
+diff --git a/services/mcp/tests/unit/instructions-formatter.test.ts b/services/mcp/tests/unit/instructions-formatter.test.ts
+index f4cc463fd0a..d39e7f47d83 100644
+--- a/services/mcp/tests/unit/instructions-formatter.test.ts
++++ b/services/mcp/tests/unit/instructions-formatter.test.ts
+@@ -184,7 +184,7 @@ describe('InstructionsFormatter', () => {
+             expect(result).toContain('Using the `posthog` tool')
+             expect(result).toContain('use the explicit target or active project without reconfirming it')
+             expect(result.indexOf('If the target project is ambiguous')).toBe(0)
+-            expect(result).toContain('Run `info <tool_name>` once if its schema is not in context.')
++            expect(result).toContain('Run `info <tool_name>` once if its shape is unfamiliar.')
+             expect(result).not.toContain('### Basic functionality')
+             expect(result).not.toContain('### Examples')
+             expect(result).not.toContain('### PostHog knowledge sources')
+-- 
+2.50.1 (Apple Git-155)
+
