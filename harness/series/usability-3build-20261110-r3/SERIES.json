@@ -1,0 +1,23 @@
+{
+  "series": "usability-3build-20261110-r3",
+  "audit_id": "posthog-mcp-bench-3build-r3",
+  "title": "PostHog MCP: baseline vs fixed vs usability research build, two task sets",
+  "supersedes": "series usability-3build-20261110-r2 (manifest 3e94f30e1a7073cfced13ca237931ec302f92e03f722bf7c82a6111d264d9c6b, frozen 2026-11-10T22:30:58Z): never measured; its dry run stopped at 17 of 36 (harness hourly request budget) and showed one more checker defect (task k FunnelsFilter defaults), fixed in 109070e. It in turn superseded usability-3build-20261110 (never measured).",
+  "relation_to_earlier_series": "Replaces usability-3build-20261110-r2 before any measured run, with the same builds, tasks, prompts, repetitions, model and budget; only checker, reset and request-pacing fixes differ. The two-build series (manifest e27c0aac..., nonce 007817e94cfb) stays on the record as it is.",
+  "builds": [
+    "baseline",
+    "fixed",
+    "usability"
+  ],
+  "task_sets": [
+    "pre-registered",
+    "friction-derived"
+  ],
+  "repetitions": 3,
+  "model": "claude-sonnet-5-5",
+  "budget_usd": 40,
+  "run_budget_usd": 4,
+  "fixtures": "v2",
+  "target": "selfhosted",
+  "reporting": "Each task set is reported on its own, per build; the two sets are never added into one total (bench/analyze.py)."
+}

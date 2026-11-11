@@ -1,0 +1,370 @@
+{
+  "audit_id": "posthog-mcp-bench",
+  "planned_runs": 36,
+  "order_seed": 1154957779,
+  "model": "claude-sonnet-5-5",
+  "design": "6 tasks x 2 builds x 3 repetitions; per repetition the tasks are shuffled, each task runs on both builds back to back, first build randomised and balanced; one run at a time",
+  "max_turns_rule": "40 for single-object tasks (b, c, d, e), 60 for multi-object tasks (a, f), as in the Grafana plan (40 / 60)",
+  "runs": [
+    {
+      "run_seq": 1,
+      "run_id": "P-a-fixed-r1",
+      "task": "a-dashboard-three-insights",
+      "build": "fixed",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r001"
+    },
+    {
+      "run_seq": 2,
+      "run_id": "P-a-baseline-r1",
+      "task": "a-dashboard-three-insights",
+      "build": "baseline",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r002"
+    },
+    {
+      "run_seq": 3,
+      "run_id": "P-d-fixed-r1",
+      "task": "d-flag-inventory",
+      "build": "fixed",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r003"
+    },
+    {
+      "run_seq": 4,
+      "run_id": "P-d-baseline-r1",
+      "task": "d-flag-inventory",
+      "build": "baseline",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r004"
+    },
+    {
+      "run_seq": 5,
+      "run_id": "P-e-baseline-r1",
+      "task": "e-annotate-deploy",
+      "build": "baseline",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r005"
+    },
+    {
+      "run_seq": 6,
+      "run_id": "P-e-fixed-r1",
+      "task": "e-annotate-deploy",
+      "build": "fixed",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r006"
+    },
+    {
+      "run_seq": 7,
+      "run_id": "P-c-fixed-r1",
+      "task": "c-flag-rollout-change",
+      "build": "fixed",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r007"
+    },
+    {
+      "run_seq": 8,
+      "run_id": "P-c-baseline-r1",
+      "task": "c-flag-rollout-change",
+      "build": "baseline",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r008"
+    },
+    {
+      "run_seq": 9,
+      "run_id": "P-b-fixed-r1",
+      "task": "b-insight-rename",
+      "build": "fixed",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r009"
+    },
+    {
+      "run_seq": 10,
+      "run_id": "P-b-baseline-r1",
+      "task": "b-insight-rename",
+      "build": "baseline",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r010"
+    },
+    {
+      "run_seq": 11,
+      "run_id": "P-f-baseline-r1",
+      "task": "f-tag-triage",
+      "build": "baseline",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r011"
+    },
+    {
+      "run_seq": 12,
+      "run_id": "P-f-fixed-r1",
+      "task": "f-tag-triage",
+      "build": "fixed",
+      "repetition": 1,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r012"
+    },
+    {
+      "run_seq": 13,
+      "run_id": "P-f-fixed-r2",
+      "task": "f-tag-triage",
+      "build": "fixed",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r013"
+    },
+    {
+      "run_seq": 14,
+      "run_id": "P-f-baseline-r2",
+      "task": "f-tag-triage",
+      "build": "baseline",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r014"
+    },
+    {
+      "run_seq": 15,
+      "run_id": "P-e-baseline-r2",
+      "task": "e-annotate-deploy",
+      "build": "baseline",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r015"
+    },
+    {
+      "run_seq": 16,
+      "run_id": "P-e-fixed-r2",
+      "task": "e-annotate-deploy",
+      "build": "fixed",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r016"
+    },
+    {
+      "run_seq": 17,
+      "run_id": "P-c-fixed-r2",
+      "task": "c-flag-rollout-change",
+      "build": "fixed",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r017"
+    },
+    {
+      "run_seq": 18,
+      "run_id": "P-c-baseline-r2",
+      "task": "c-flag-rollout-change",
+      "build": "baseline",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r018"
+    },
+    {
+      "run_seq": 19,
+      "run_id": "P-a-fixed-r2",
+      "task": "a-dashboard-three-insights",
+      "build": "fixed",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r019"
+    },
+    {
+      "run_seq": 20,
+      "run_id": "P-a-baseline-r2",
+      "task": "a-dashboard-three-insights",
+      "build": "baseline",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r020"
+    },
+    {
+      "run_seq": 21,
+      "run_id": "P-b-fixed-r2",
+      "task": "b-insight-rename",
+      "build": "fixed",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r021"
+    },
+    {
+      "run_seq": 22,
+      "run_id": "P-b-baseline-r2",
+      "task": "b-insight-rename",
+      "build": "baseline",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r022"
+    },
+    {
+      "run_seq": 23,
+      "run_id": "P-d-baseline-r2",
+      "task": "d-flag-inventory",
+      "build": "baseline",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r023"
+    },
+    {
+      "run_seq": 24,
+      "run_id": "P-d-fixed-r2",
+      "task": "d-flag-inventory",
+      "build": "fixed",
+      "repetition": 2,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r024"
+    },
+    {
+      "run_seq": 25,
+      "run_id": "P-c-baseline-r3",
+      "task": "c-flag-rollout-change",
+      "build": "baseline",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r025"
+    },
+    {
+      "run_seq": 26,
+      "run_id": "P-c-fixed-r3",
+      "task": "c-flag-rollout-change",
+      "build": "fixed",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r026"
+    },
+    {
+      "run_seq": 27,
+      "run_id": "P-d-baseline-r3",
+      "task": "d-flag-inventory",
+      "build": "baseline",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r027"
+    },
+    {
+      "run_seq": 28,
+      "run_id": "P-d-fixed-r3",
+      "task": "d-flag-inventory",
+      "build": "fixed",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r028"
+    },
+    {
+      "run_seq": 29,
+      "run_id": "P-f-fixed-r3",
+      "task": "f-tag-triage",
+      "build": "fixed",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r029"
+    },
+    {
+      "run_seq": 30,
+      "run_id": "P-f-baseline-r3",
+      "task": "f-tag-triage",
+      "build": "baseline",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r030"
+    },
+    {
+      "run_seq": 31,
+      "run_id": "P-a-baseline-r3",
+      "task": "a-dashboard-three-insights",
+      "build": "baseline",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r031"
+    },
+    {
+      "run_seq": 32,
+      "run_id": "P-a-fixed-r3",
+      "task": "a-dashboard-three-insights",
+      "build": "fixed",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 60,
+      "run_tag": "r032"
+    },
+    {
+      "run_seq": 33,
+      "run_id": "P-e-baseline-r3",
+      "task": "e-annotate-deploy",
+      "build": "baseline",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r033"
+    },
+    {
+      "run_seq": 34,
+      "run_id": "P-e-fixed-r3",
+      "task": "e-annotate-deploy",
+      "build": "fixed",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r034"
+    },
+    {
+      "run_seq": 35,
+      "run_id": "P-b-baseline-r3",
+      "task": "b-insight-rename",
+      "build": "baseline",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r035"
+    },
+    {
+      "run_seq": 36,
+      "run_id": "P-b-fixed-r3",
+      "task": "b-insight-rename",
+      "build": "fixed",
+      "repetition": 3,
+      "model": "claude-sonnet-5-5",
+      "max_turns": 40,
+      "run_tag": "r036"
+    }
+  ]
+}

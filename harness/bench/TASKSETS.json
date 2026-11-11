@@ -1,0 +1,33 @@
+{
+  "_doc": "Which benchmark task belongs to which task set (AUDIT_SOP Phase 4, 'Two task sets, always reported separately'). bench/_make_plan.py and bench/analyze.py read this file; every task file also states its set on its second line.",
+  "sets": {
+    "pre-registered": {
+      "description": "The fair test. Written and frozen on 2026-11-10 (first freeze f9e60755, then e27c0aac), before the usability change list existed. Prompts and checker criteria unchanged since then.",
+      "frozen_on": "2026-11-10",
+      "favours": null,
+      "tasks": [
+        {"letter": "a", "id": "a-dashboard-three-insights", "max_turns": 60},
+        {"letter": "b", "id": "b-insight-rename", "max_turns": 40},
+        {"letter": "c", "id": "c-flag-rollout-change", "max_turns": 40},
+        {"letter": "d", "id": "d-flag-inventory", "max_turns": 40},
+        {"letter": "e", "id": "e-annotate-deploy", "max_turns": 40},
+        {"letter": "f", "id": "f-tag-triage", "max_turns": 60}
+      ]
+    },
+    "friction-derived": {
+      "description": "Built on 2026-11-10 from the jobs of the friction session (FRICTION-REPORT-20261110), AFTER the usability changes were designed. It exercises what those changes target and therefore favours the usability build by construction; it is never pooled with the pre-registered set.",
+      "written_on": "2026-11-10",
+      "favours": "usability",
+      "fixtures": "v2",
+      "tasks": [
+        {"letter": "g", "id": "g-dashboard-five-tiles", "max_turns": 60, "friction_job": 1},
+        {"letter": "h", "id": "h-bulk-tag-annotate", "max_turns": 60, "friction_job": 3},
+        {"letter": "i", "id": "i-flag-add-variant", "max_turns": 40, "friction_job": 4},
+        {"letter": "j", "id": "j-survey-edit-question", "max_turns": 40, "friction_job": 7},
+        {"letter": "k", "id": "k-funnel-step-edit", "max_turns": 40, "friction_job": 2},
+        {"letter": "l", "id": "l-cleanup", "max_turns": 60, "friction_job": 10}
+      ]
+    }
+  },
+  "max_turns_rule": "40 for single-object tasks, 60 for multi-object tasks (the rule of the 2026-11-10 plan, itself the Grafana plan's 40 / 60)"
+}

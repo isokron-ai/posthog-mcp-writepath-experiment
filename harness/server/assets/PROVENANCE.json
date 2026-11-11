@@ -1,0 +1,10 @@
+{
+  "fetched_at": "2026-11-10T18:42Z",
+  "why": "The MCP server downloads these two archives at startup from GitHub release assets that float (agent-skills-latest, context-mill latest). For runs against the self-hosted target they are served from loopback by server/local-runtime.mjs so both builds see the same bytes and the server makes no outbound call.",
+  "files": {
+    "skills.zip": {"source": "https://github.com/PostHog/posthog/releases/download/agent-skills-latest/skills.zip", "last_modified": "Tue, 10 Nov 2026 17:35:38 GMT", "entries": 483,
+                   "served_as": "POSTHOG_MCP_SKILLS_URL (no POSTHOG_MCP_SKILLS_SHA256: pinning the sha would also switch off the omnibus overlay, which an unpinned default install has)"},
+    "skills-mcp-resources.zip": {"source": "https://github.com/PostHog/context-mill/releases/latest/download/skills-mcp-resources.zip", "resolved_release": "v1.62.0", "last_modified": "Tue, 10 Nov 2026 16:26:00 GMT", "entries": 292,
+                   "served_as": "POSTHOG_MCP_LOCAL_SKILLS_URL"}
+  }
+}

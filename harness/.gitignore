@@ -1,0 +1,35 @@
+# secrets / keys / tokens (keys live outside the repository; config files name them by path)
+*.key
+*.pem
+*.token
+*-key
+*-token
+*secret*
+.secrets/
+secrets/
+.env
+.env.*
+!config.env
+# dependencies and build outputs
+node_modules/
+build/work/
+build/out/*/hono-server.mjs
+build/out/*/hono-server.mjs.map
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+# large clones
+src/
+# raw transcripts may contain tokens; only the redacted copy is kept in git
+runs/**/transcript*.jsonl
+!runs/**/transcript.redacted.jsonl
+dryruns/**/transcript*.jsonl
+!dryruns/**/transcript.redacted.jsonl
+# runtime state
+.lock/
+.kl/
+*.pid
+logs/
+# pinned skills archives (sha256 in server/assets/SHA256SUMS; 15 MB, kept out of git)
+server/assets/*.zip

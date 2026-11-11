@@ -1,0 +1,4 @@
+# Server under test: PostHog/posthog, directory services/mcp (the official PostHog MCP server).
+POSTHOG_REPO=https://github.com/PostHog/posthog.git
+POSTHOG_SHA=7b516983bef16b9692a00a6b7780a6b5a802257c
+# committer date of that commit (UTC): 2026-11-10T02:18:12Z, "chore(replay): remove the seekbar activity curve from all player layouts (#132313)"
