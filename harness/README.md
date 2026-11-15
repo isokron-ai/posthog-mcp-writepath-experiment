@@ -57,7 +57,7 @@ licensed. No load or fuzz testing: harness requests are capped at 2 per second.
                               cleanup.py, _make_plan.py, _make_manifest.py, freeze.py, analyze.py, BENCH-PLAN.md/.json, TASKSETS.json
     series/                   SERIES.json and the run plans of the measured three-build series
     probes/                   insights_race.py (lost-update probe, not part of the benchmark), shape_check*.py (checker validation)
-    runner/                   package.json (Claude Agent SDK 0.3.319, kronicle-lite 0.10.2), kl.py (evidence chain)
+    runner/                   package.json (agent SDK 0.3.319, kronicle-lite 0.10.2), kl.py (evidence chain)
     tests/                    test_offline.py + fake_posthog.py (no network, no key, no model)
     catalog/selfhosted/       what the agent saw from each build (initialize + tools/list)
 
@@ -70,7 +70,7 @@ Run every command from this directory.
    `../selfhost/.secrets/api-key`.
 2. `config.selfhosted.env`: fill in `POSTHOG_PROJECT_ID` and `EXPECTED_ORG_ID` (the preflight refuses unless the key
    resolves to exactly this project in this organization).
-3. `config.env`: set `ANTHROPIC_KEY_FILE` to the path of a file whose first line is your Anthropic API key (mode 600).
+3. `config.env`: set `ANTHROPIC_KEY_FILE` to the path of a file whose first line is your model provider's API key (mode 600).
    Runs are billed to that key; the measured series of 108 runs cost 11.50 USD.
 4. Docker (for the dedicated Redis container), Node 25 or 26, pnpm, Python 3.9+, `openssl`.
 5. `(cd runner && npm ci)`, `build/clone.sh`, `build/build.sh baseline`, `build/build.sh fixed`, `build/build.sh usability`.

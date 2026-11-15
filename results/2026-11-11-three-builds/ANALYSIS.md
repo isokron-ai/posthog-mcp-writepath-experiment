@@ -1,7 +1,7 @@
-<!-- Copied from the harness output ANALYSIS-20261111T004907Z.md. Only change: object ids in two failed-call URLs replaced by <project>/<id>. -->
+<!-- Copied from the harness output ANALYSIS-20261111T004907Z.md. Only changes: object ids in two failed-call URLs replaced by <project>/<id>; on 15 Nov 2026 the model id and client name replaced by neutral wording. -->
 # PostHog MCP benchmark: baseline vs fixed vs usability
 
-Series `series-64ff29b657a3` (usability-3build-20261110-r3) · model `claude-sonnet-5-5` · manifest `ba28998491b76e9dd48faa52ef9c77f130c07721a34e2c584876a525090ac872` · generated 2026-11-11T00:49:07Z
+Series `series-64ff29b657a3` (usability-3build-20261110-r3) · model: one frontier model · manifest `ba28998491b76e9dd48faa52ef9c77f130c07721a34e2c584876a525090ac872` · generated 2026-11-11T00:49:07Z
 Build hashes: baseline `d573fa771cd73130cbdf30de29e73edc592992be2b3588af5c2ee87c1729d55b`, fixed `cf5053c3409b2ad5b90c2c73189cc88496054cf6e95f6aa029353f239e75d4a1`, usability `57a1a7b97ef827a88e40979e65c3a226f2820b6b4fb2a0f691539105c9d475e0`
 Finished attempts: 108 (usable: 108). Correctness is the mechanical checker's verdict on PostHog's end state; nothing here is judged by a model.
 
@@ -381,7 +381,7 @@ Built on 2026-11-10 from the jobs of the friction session (FRICTION-REPORT-20261
 ## Limitations
 
 - Three repetitions per task and build show spread, not a distribution; no significance test is claimed. Differences inside the min-max ranges of another build are not evidence of a difference.
-- One model (`claude-sonnet-5-5`), one client (Claude Agent SDK), one server mode (cli: a single `exec` tool). Other models, clients or tools mode may behave differently.
+- One model (a frontier model), one client (an agent SDK), one server mode (cli: a single `exec` tool). Other models, clients or tools mode may behave differently.
 - The pre-registered tasks were written by the same team that wrote the fixes, and the same findings informed both: they exercise behaviours the bug-fix patches change. The result says how the builds do on these tasks, not how the server does on PostHog work in general.
 - The friction-derived set was written after the usability changes were designed, from the jobs that motivated them; it favours the usability build by construction and must not be read as a fair comparison. It is reported apart from the pre-registered set and never pooled with it.
 - Correctness is a mechanical end-state check with exact criteria; a run can be marked incorrect for a deviation a human would accept (and the reverse cannot be ruled out for criteria the checker does not have).

@@ -18,7 +18,7 @@ tool calls and 14.4% more bytes. On the friction-derived tasks, which favour the
 research build used 31.0% fewer tool calls, 28.9% fewer turns and 60.5% fewer bytes. The results measure each combined
 set of changes, not each change on its own.
 
-Cost, as estimated by the Claude Agent SDK, was near-flat on the fair set: 1.73 USD unmodified, 1.90 (+9.3%) on the
+Cost, as estimated by the agent SDK, was near-flat on the fair set: 1.73 USD unmodified, 1.90 (+9.3%) on the
 bug-fix build and 1.72 (−0.7%) on the research build; on the friction-derived set 2.28, 2.09 (−8.6%) and 1.77 (−22.4%).
 Most of each run's input is read back from the prompt cache at a fraction of the normal price, so fewer calls and smaller
 results lower cost much less than they lower calls and bytes.
@@ -30,7 +30,7 @@ results lower cost much less than they lower calls and bytes.
   PostHog Cloud: the MCP server ran with a loopback-only egress guard that logs every connection. This is not a
   measurement of PostHog Cloud, whose behaviour may differ; self-hosted PostHog has the open-source feature set, and every
   task uses only features available there.
-- **Agent:** one `claude-sonnet-5-5` agent per run through the Claude Agent SDK 0.3.319 (Claude Code 2.1.319). Every
+- **Agent:** one agent per run (a frontier model) through an agent SDK (SDK 0.3.319, CLI 2.1.319). Every
   built-in tool removed except tool search; the local PostHog MCP server is the only tool source, in its default `cli`
   mode (one `exec` tool reaching the whole catalog through `search`, `info`, `schema` and `call`). Max turns 40 for
   single-object tasks, 60 for multi-object tasks; 4 USD cap per run.
@@ -248,7 +248,7 @@ Per-task tables: [`2026-11-10-two-builds/ANALYSIS.md`](2026-11-10-two-builds/ANA
 ## Limitations
 
 - Three repetitions per task and build show spread, not a distribution; no significance test is claimed.
-- One model, one client (Claude Agent SDK), one server mode (`cli`). Other models, clients or the `tools` mode may behave
+- One model, one client (an agent SDK), one server mode (`cli`). Other models, clients or the `tools` mode may behave
   differently.
 - The pre-registered tasks were written by the team that wrote the fixes, from the same audit findings. They say how the
   builds do on these tasks, not how the server does on PostHog work in general.

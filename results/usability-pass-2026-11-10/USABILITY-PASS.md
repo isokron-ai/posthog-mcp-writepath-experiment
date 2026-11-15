@@ -7,7 +7,7 @@ published article (lookup overhead, unmodified, bug-fix build, research build, t
 numbers and rankings are as written on 10 November 2026, before the research build existed; they are estimates from one
 session, not measurements of a changed server. Results of the research build are in [BENCHMARK.md](../BENCHMARK.md).
 
-All token figures are tokens (cl100k estimate), counted with tiktoken 0.14.0; cl100k is not Claude's tokenizer.
+All token figures are tokens (cl100k estimate), counted with tiktoken 0.14.0; cl100k is not the agent model's tokenizer.
 
 ## How this was run
 

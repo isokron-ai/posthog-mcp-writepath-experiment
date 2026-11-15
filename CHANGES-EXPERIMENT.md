@@ -7,7 +7,7 @@ Based on `PostHog/posthog` at commit `7b516983` (the `upstream-7b516983` tag; se
 
 The tag names are identifiers: the unmodified server is `upstream-7b516983`, the bug-fix build `fixed-r3`, the research build `usability-r3` (the harness calls them `baseline`, `fixed` and `usability`).
 
-Sizes from the usability pass are tokens (cl100k estimate), not Claude's tokenizer. Lookup overhead is the output of `info`, `schema` and `search`: looking up tools and their schemas before acting.
+Sizes from the usability pass are tokens (cl100k estimate), not the agent model's tokenizer. Lookup overhead is the output of `info`, `schema` and `search`: looking up tools and their schemas before acting.
 
 Every commit keeps the message it was made with; the messages carry the full reasoning, and `git show <commit>` gives the diff. Generated files under `services/mcp/src/tools/generated/` and `services/mcp/schema/` were edited by hand to match what the generator emits where noted, because the generator needs PostHog's backend OpenAPI schema, which a build of this repository does not have.
 

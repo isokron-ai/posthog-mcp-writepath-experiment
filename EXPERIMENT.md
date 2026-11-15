@@ -107,8 +107,8 @@ gives instead).
 
 The three builds against a **self-hosted PostHog open-source instance at the same pinned commit**, never PostHog Cloud.
 The hosted service may behave differently, and nothing here is a measurement of PostHog Cloud. Twelve tasks in two
-separately reported sets, 3 runs per task and build: 108 runs on 10 and 11 November 2026 (UTC), one `claude-sonnet-5-5`
-agent per run through the Claude Agent SDK 0.3.319 (Claude Code 2.1.319), with the local PostHog MCP server as the only
+separately reported sets, 3 runs per task and build: 108 runs on 10 and 11 November 2026 (UTC), one agent per
+run (a frontier model) through an agent SDK (SDK 0.3.319, CLI 2.1.319), with the local PostHog MCP server as the only
 tool source, in the server's default `cli` mode (one `exec` tool). The harness was hashed and timestamped before the first
 measured run, fixtures were reset to the same state hash before every run, the three builds of each task ran back to back
 in a balanced order, and only the server bundle changed between them. Correctness is a mechanical check of PostHog's end

@@ -1,7 +1,7 @@
-<!-- Copied from the harness output ANALYSIS-20261110T191034Z.md. Only change: object ids in two failed-call URLs replaced by <project>/<id>. -->
+<!-- Copied from the harness output ANALYSIS-20261110T191034Z.md. Only changes: object ids in two failed-call URLs replaced by <project>/<id>; on 15 Nov 2026 the model id and client name replaced by neutral wording. -->
 # PostHog MCP benchmark: baseline vs fixed build
 
-Series `series-007817e94cfb` · model `claude-sonnet-5-5` · manifest `e27c0aac349c37438705d716f743c314d3de3518f65c275c4b967062a698f24d` · generated 2026-11-10T19:10:34Z
+Series `series-007817e94cfb` · model: one frontier model · manifest `e27c0aac349c37438705d716f743c314d3de3518f65c275c4b967062a698f24d` · generated 2026-11-10T19:10:34Z
 Build hashes: baseline `d573fa771cd73130cbdf30de29e73edc592992be2b3588af5c2ee87c1729d55b`, fixed `cf5053c3409b2ad5b90c2c73189cc88496054cf6e95f6aa029353f239e75d4a1`
 Finished attempts: 36 (usable: 36). Correctness is the mechanical checker's verdict on PostHog's end state; nothing here is judged by a model.
 
@@ -161,7 +161,7 @@ None.
 ## Limitations
 
 - Three repetitions per task and build show spread, not a distribution; no significance test is claimed. Differences inside the min-max ranges of the other build are not evidence of a difference.
-- One model (`claude-sonnet-5-5`), one client (Claude Agent SDK), one server mode (cli: a single `exec` tool). Other models, clients or tools mode may behave differently.
+- One model (a frontier model), one client (an agent SDK), one server mode (cli: a single `exec` tool). Other models, clients or tools mode may behave differently.
 - The six tasks were written by the same team that wrote the fixes, and the same findings informed both: the tasks exercise the behaviours the patches change (partial updates, flag filter preservation, paging signals, tag lists). The result says how the fixes do on these tasks, not how the server does on PostHog work in general.
 - Correctness is a mechanical end-state check with exact criteria; a run can be marked incorrect for a deviation a human would accept (and the reverse cannot be ruled out for criteria the checker does not have).
 - Cost is the SDK's reported estimate and depends on prompt-cache state; baseline and fixed runs alternate so that cache and time effects do not fall on one build, but they are not eliminated.
